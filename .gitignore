@@ -1,0 +1,13 @@
+.audit/
+.local/
+.artifacts/
+.build/
+**/target/
+frontend/node_modules/
+frontend/dist/
+.env
+.env.local
+*.env
+!*.env.example
+*.pem
+*.key

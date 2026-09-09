@@ -1,0 +1,27 @@
+[Unit]
+Description=Ollama Link TURN and TLS gateway
+Wants=network-online.target
+After=network-online.target ollama-link-signaling.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ollama-link
+Group=ollama-link
+WorkingDirectory=/opt/ollama-link
+EnvironmentFile=/etc/ollama-link/turn.env
+ExecStart=/opt/ollama-link/bin/turn-server
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

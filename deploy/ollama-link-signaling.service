@@ -1,0 +1,25 @@
+[Unit]
+Description=Ollama Link signaling and frontend
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ollama-link
+Group=ollama-link
+WorkingDirectory=/opt/ollama-link
+EnvironmentFile=/etc/ollama-link/signaling.env
+ExecStart=/opt/ollama-link/bin/signaling-server
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
