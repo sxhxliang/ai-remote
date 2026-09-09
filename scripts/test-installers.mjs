@@ -4,7 +4,7 @@ import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile }
 import { tmpdir } from 'node:os';
 import { basename, delimiter, dirname, join, resolve, sep } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
-import { packageRelease, sha256, targets } from './package-release.mjs';
+import { packageRelease, sha256, tarCommand, targets } from './package-release.mjs';
 import { releaseRoot, versionPattern } from './release-version.mjs';
 
 const execute = promisify(execFile);
@@ -128,7 +128,7 @@ if (url === 'https://github.com/fixture/ai-remote/releases/latest') {
   await mkdir(unsafe);
   await writeFile(join(unsafe, 'outside.txt'), 'must not be extracted');
   const archive = join(downloads, asset);
-  await execute(windows ? 'tar.exe' : 'tar', windows ? ['-a', '-cf', archive, 'outside.txt'] : ['-czf', archive, 'outside.txt'], { cwd: unsafe, windowsHide: true });
+  await execute(tarCommand, windows ? ['-a', '-cf', archive, 'outside.txt'] : ['-czf', archive, 'outside.txt'], { cwd: unsafe, windowsHide: true });
   await writeFile(archive + '.sha256', await sha256(archive) + '  ' + asset + '\n');
   await expectFailure(/Archive contains an (unsafe|unexpected) path/);
   assert.equal(await currentVersion(), upgraded);

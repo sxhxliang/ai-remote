@@ -6,11 +6,10 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { buildVersion, services } from './release-version.mjs';
-import { deploymentFiles, packageRelease, sha256, targets, verifyPackages } from './package-release.mjs';
+import { deploymentFiles, packageRelease, sha256, tarCommand, targets, verifyPackages } from './package-release.mjs';
 import { prepareRelease } from './prepare-release.mjs';
 
 const execute = promisify(execFile);
-const tar = process.platform === 'win32' ? 'tar.exe' : 'tar';
 
 async function fixture(run) {
   const temporaryRoot = await realpath(tmpdir());
@@ -59,7 +58,7 @@ test('native packages include the runnable layout and exclude local deployment s
   assert.equal((await readFile(archive + '.sha256', 'utf8')).trim(), digest + '  ' + basename(archive));
   const extracted = join(directory, 'extracted');
   await mkdir(extracted);
-  await execute(tar, ['-xf', archive, '-C', extracted]);
+  await execute(tarCommand, ['-xf', archive, '-C', extracted]);
   const payload = join(extracted, 'ai-remote');
   assert.deepEqual((await readdir(join(payload, 'deploy'))).sort(), [...deploymentFiles].sort());
   assert.deepEqual((await readdir(join(payload, 'bin'))).sort(), services.map((service) => service + suffix).sort());

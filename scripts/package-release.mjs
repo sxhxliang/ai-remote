@@ -22,6 +22,11 @@ export const deploymentFiles = [
   'ollama-link-home-agent.service', 'ollama-link-signaling.service', 'ollama-link-turn.service',
 ];
 
+// Git Bash also supplies a tar.exe, but it treats Windows drive letters as
+// remote hosts and cannot create these ZIP packages. Use Windows' bsdtar.
+export const tarCommand = process.platform === 'win32'
+  ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+
 export async function sha256(path) {
   const hash = createHash('sha256');
   for await (const bytes of createReadStream(path)) hash.update(bytes);
@@ -70,7 +75,7 @@ export async function packageRelease({ target, version, binDir, outDir = resolve
     await mkdir(outDir, { recursive: true });
     const archive = resolve(outDir, 'ai-remote-' + target + platform.extension);
     const args = platform.os === 'windows' ? ['-a', '-cf', archive, 'ai-remote'] : ['-czf', archive, 'ai-remote'];
-    await run(process.platform === 'win32' ? 'tar.exe' : 'tar', args, staging);
+    await run(tarCommand, args, staging);
     const digest = await sha256(archive);
     await writeFile(archive + '.sha256', digest + '  ' + basename(archive) + '\n');
     return { archive, digest };
