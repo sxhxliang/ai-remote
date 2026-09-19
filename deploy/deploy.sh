@@ -352,6 +352,22 @@ EOF
 
   sleep 1
   if systemctl is-active --quiet ollama-link-turn; then
+    # 若信令服务已存在，自动将 TURN 配置同步给信令服务与 Web 前端
+    local sig_env="/etc/ollama-link/signaling.env"
+    if [ -f "$sig_env" ]; then
+      grep -v '^STUN_URL=' "$sig_env" | grep -v '^TURN_URL=' | grep -v '^TURN_USER=' | grep -v '^TURN_PASS=' > "${sig_env}.tmp" || true
+      cat >> "${sig_env}.tmp" <<EOF
+STUN_URL=stun:${pub_ip}:3478
+TURN_URL=turn:${pub_ip}:3478?transport=udp
+TURN_USER=ollama-link
+TURN_PASS=${turn_pass}
+EOF
+      mv "${sig_env}.tmp" "$sig_env"
+      chmod 640 "$sig_env"
+      chown root:ollama-link "$sig_env" 2>/dev/null || true
+      systemctl restart ollama-link-signaling 2>/dev/null || true
+    fi
+
     printf "\n"
     printf "${GREEN}================================================================================${NC}\n"
     printf "  ${BOLD}🔄 AI Remote TURN 中继服务已启动！${NC}\n"
@@ -361,6 +377,7 @@ EOF
     printf "  🔌 STUN/TURN 端口: 3478 (UDP/TCP)\n"
     printf "  👤 TURN 用户名:    ollama-link\n"
     printf "  🔑 TURN 密码:      %s\n" "$turn_pass"
+    printf "  💡 已将中继配置同步给信令服务与 Web 控制面板，前端已自动就绪。\n"
     printf "${GREEN}================================================================================${NC}\n\n"
   else
     log_err "TURN 服务启动失败，查看日志："
