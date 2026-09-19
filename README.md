@@ -35,17 +35,17 @@ irm https://github.com/sxhxliang/ai-remote/releases/latest/download/install.ps1 
 | 命令目录 | `~/.local/bin`，按安装提示加入 PATH | 安装目录下的 `bin\`，自动加入当前用户 PATH |
 | 当前版本 | 安装目录下的 `current` 符号链接 | 安装目录下的 `current.json` |
 
-三个命令是 `ai-remote-agent`、`ai-remote-signaling`、`ai-remote-turn`，均支持 `--version`。安装完成后，填写配置并按下文部署；安装脚本不会自动创建凭据或启动服务。
+三个核心命令是 `ai-remote-agent`、`ai-remote-signaling`、`ai-remote-turn`（均支持 `--version`），Linux 还提供一键部署向导 `ai-remote-deploy`。信令服务开箱即用（免配置自动生成 Token 与直连网址），也可使用一键部署向导快速配置 systemd 服务。
 
 指定版本或目录：
 
 ```sh
-curl -fsSL https://github.com/sxhxliang/ai-remote/releases/latest/download/install.sh | AI_REMOTE_VERSION=v0.1.0 sh
+curl -fsSL https://github.com/sxhxliang/ai-remote/releases/latest/download/install.sh | AI_REMOTE_VERSION=v0.2.1 sh
 curl -fsSL https://github.com/sxhxliang/ai-remote/releases/latest/download/install.sh | AI_REMOTE_INSTALL_DIR="$HOME/apps/ai-remote" AI_REMOTE_BIN_DIR="$HOME/bin" sh
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/sxhxliang/ai-remote/releases/latest/download/install.ps1))) -Version v0.1.0 -InstallDir 'D:\Apps\ai-remote'
+& ([scriptblock]::Create((irm https://github.com/sxhxliang/ai-remote/releases/latest/download/install.ps1))) -Version v0.2.1 -InstallDir 'D:\Apps\ai-remote'
 ```
 
 Windows 可加 `-NoPath` 禁用 PATH 修改。两个脚本均支持 `AI_REMOTE_REPO=owner/repo`，便于使用自己的 fork。也可在 Release 页面手动下载 ZIP / tar.gz 和对应 `.sha256` 文件；`SHA256SUMS` 同时覆盖安装包和安装脚本。
@@ -173,15 +173,22 @@ VPS 部署信令、TURN 和构建后的前端，家庭电脑部署 Agent 与真�
 curl -fsSL https://github.com/sxhxliang/ai-remote/releases/latest/download/install.sh | sudo env AI_REMOTE_INSTALL_DIR=/opt/ollama-link AI_REMOTE_BIN_DIR=/usr/local/bin sh
 ```
 
-3. 创建服务账户 `ollama-link`，把 `/opt/ollama-link/deploy/signaling.env.example`、`turn.env.example` 分别复制到 `/etc/ollama-link/signaling.env` 和 `/etc/ollama-link/turn.env`，填好随机 Token、TURN 密码、公网 IP。密码至少 16 个字符，可用 `openssl rand -hex 24` 生成。配置文件仅允许 root 和该服务账户读取。
-4. 将证书链和私钥放到 TURN 配置指向的位置，并允许服务账户读取。复制 `/opt/ollama-link/deploy/` 下两个对应的 `.service` 文件到 `/etc/systemd/system/`，执行：
+3. 运行一键部署向导（自动创建低权限系统用户 `ollama-link`、生成安全 Token、配置并启动 systemd 服务）：
 
 ```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now ollama-link-signaling ollama-link-turn
+# 交互式菜单选择
+sudo ai-remote-deploy
+
+# 或直接非交互式一键启动信令服务：
+sudo ai-remote-deploy signaling
 ```
 
-也可以从源码构建，将三个服务的 release 程序放到 `/opt/ollama-link/bin/`，并把 `frontend/dist/` 的内容放到 `/opt/ollama-link/frontend/`。更新安装包后重启对应服务以使用新版本。
+部署成功后，终端将输出：
+- 浏览器一键访问 URL（含 Token Hash）
+- Web 控制中心与房间连接监控地址（`/setup`）
+- 家里 Agent 的一键接入终端指令
+
+4. （可选）如需部署 TURN 中继服务或使用 TLS 证书，可在向导中选择 `deploy_turn`，或编辑 `/etc/ollama-link/turn.env`。复制 `/opt/ollama-link/deploy/ollama-link-turn.service` 到 `/etc/systemd/system/` 后执行 `sudo systemctl enable --now ollama-link-turn`。
 
 TURN 的 TLS 监听器用 **同一 IP 的 443/TCP** 接收浏览器 HTTPS、WSS 和 TURN/TLS。HTTP / WSS 固定转发到 `HTTPS_UPSTREAM=127.0.0.1:8080`，TURN 数据进入中继。信令服务与网页不需要再占用公网 443。
 

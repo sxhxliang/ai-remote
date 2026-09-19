@@ -58,7 +58,7 @@ main() {
       || fail 'No published release was found. Publish a v* tag before installing.'
     version=${release_url##*/}
   fi
-  printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$' || fail 'Invalid AI_REMOTE_VERSION; use a tag such as v0.1.0.'
+  printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$' || fail 'Invalid AI_REMOTE_VERSION; use a tag such as v0.2.1.'
   asset=ai-remote-$target.tar.gz
   base_url=https://github.com/$repo/releases/download/$version
   temporary_root=$(cd "${TMPDIR:-/tmp}" && pwd -P)
@@ -131,11 +131,37 @@ main() {
   ln -sfn "$install_root/bin/home-agent" "$bin_dir/ai-remote-agent"
   ln -sfn "$install_root/bin/signaling-server" "$bin_dir/ai-remote-signaling"
   ln -sfn "$install_root/bin/turn-server" "$bin_dir/ai-remote-turn"
+  if [ -f "$install_root/deploy/deploy.sh" ]; then
+    chmod 755 "$install_root/deploy/deploy.sh" 2>/dev/null || true
+    ln -sfn "$install_root/deploy/deploy.sh" "$bin_dir/ai-remote-deploy"
+  fi
   printf 'Installed AI Remote %s in %s\n' "$version" "$install_root"
   printf 'Configuration (existing files preserved): %s/config\n' "$install_root"
   printf 'Check the install: "%s/ai-remote-agent" --version\n' "$bin_dir"
   printf 'Add to PATH if needed: export PATH="%s:$PATH"\n' "$bin_dir"
-  printf 'Fill in the signaling URL, room and credentials before starting the Agent.\n'
+
+  printf '\n'
+  printf '================================================================================\n'
+  printf '  🚀 AI Remote %s 安装完成！[免配置模式 / Zero-Config]\n' "$version"
+  printf '================================================================================\n'
+  printf '  🌐 [云端 VPS] 启动信令服务 (自带 Web 前端与配置面板):\n'
+  printf '     "%s/ai-remote-signaling"\n' "$bin_dir"
+  printf '\n'
+  printf '  🏠 [家里电脑] 启动 Agent (直连本机 Ollama 11434):\n'
+  printf '     "%s/ai-remote-agent" <信令WS地址> <访问Token>\n' "$bin_dir"
+  printf '     例如: ai-remote-agent ws://your-vps-ip:8080/ws your-token\n'
+  printf '\n'
+  printf '  ⚙️  [Web 管理中心] 实时监控与连接测试:\n'
+  printf '     http://<VPS-IP>:8080/setup\n'
+  printf '\n'
+  printf '  🛠️  [生产部署] 一键注册为 systemd 后台服务 (守护进程):\n'
+  printf '     sudo bash "%s/deploy/deploy.sh"\n' "$install_root"
+  printf '     或直接执行: sudo ai-remote-deploy\n'
+  printf '================================================================================\n\n'
+
+  if [ -n "${AI_REMOTE_DEPLOY:-}" ] && [ -f "$install_root/deploy/deploy.sh" ]; then
+    bash "$install_root/deploy/deploy.sh" "$AI_REMOTE_DEPLOY"
+  fi
 }
 
 main "$@"

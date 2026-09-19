@@ -22,7 +22,7 @@ if ($Version -eq 'latest') {
     try { $Version = (Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest" -TimeoutSec 30).tag_name }
     catch { throw 'No published release could be found. Check the repository, network, and v* release tag.' }
 }
-if ($Version -cnotmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') { throw 'Version must be a release tag such as v0.1.0.' }
+if ($Version -cnotmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') { throw 'Version must be a release tag such as v0.2.1.' }
 
 $installRoot = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\', '/')
 if ($installRoot.TrimEnd('\', '/') -eq [IO.Path]::GetPathRoot($installRoot).TrimEnd('\', '/')) { throw 'Cannot install into the root of a drive.' }
@@ -109,6 +109,22 @@ try {
     Write-Output "Check the install: & `"$binDirectory\ai-remote-agent.cmd`" --version"
     Write-Output 'After filling in home-agent.env, run:'
     Write-Output ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}\scripts\run-home-agent.ps1" -EnvFile "{1}\home-agent.env"' -f $versionDirectory, $configuration)
+    Write-Output ""
+    Write-Output "================================================================================"
+    Write-Output "  🚀 AI Remote $Version 安装成功！[免配置模式 / Zero-Config]"
+    Write-Output "================================================================================"
+    Write-Output "  🏠 [家里电脑] 启动 Agent (免配置连接):"
+    Write-Output "     ai-remote-agent <信令WS地址> <Token>"
+    Write-Output "     例如: ai-remote-agent ws://your-vps-ip:8080/ws your-token"
+    Write-Output ""
+    Write-Output "  🌐 [云端/开发] 启动信令服务 (自带 Web 界面):"
+    Write-Output "     ai-remote-signaling"
+    Write-Output "     (启动后直接打开 http://127.0.0.1:8080/setup 查看控制面板与房间状态)"
+    Write-Output ""
+    Write-Output "  🔄 后台常驻 (Windows 登录自动启动 Agent 计划任务):"
+    Write-Output ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}\scripts\install-home-agent-task.ps1" -EnvFile "{1}\home-agent.env"' -f $versionDirectory, $configuration)
+    Write-Output "================================================================================"
+    Write-Output ""
 } finally {
     if ($stage -and (Test-Path -LiteralPath $stage)) {
         $resolvedStage = (Resolve-Path -LiteralPath $stage).Path

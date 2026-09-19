@@ -20,6 +20,7 @@ export const targets = {
 export const deploymentFiles = [
   'home-agent.env.example', 'signaling.env.example', 'turn.env.example',
   'ollama-link-home-agent.service', 'ollama-link-signaling.service', 'ollama-link-turn.service',
+  'deploy.sh',
 ];
 
 // Git Bash also supplies a tar.exe, but it treats Windows drive letters as
