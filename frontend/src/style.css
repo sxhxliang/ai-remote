@@ -12,6 +12,9 @@ label { display: grid; gap: 7px; font-size: 13px; color: #51665c; }
 .eyebrow { font-size: 10px; letter-spacing: 2px; color: #688473; font-weight: 700; }
 h1 { font-size: 31px; letter-spacing: -.8px; margin: 9px 0; }
 .app-header p { color: #708077; margin: 0; font-size: 14px; }
+.header-actions { display: flex; align-items: center; gap: 12px; }
+.setup-link { font-size: 13px; color: #21614d; text-decoration: none; padding: 7px 14px; background: #e8ede8; border-radius: 20px; font-weight: 600; transition: all .15s ease; white-space: nowrap; }
+.setup-link:hover { background: #deeee3; }
 .connection-badge { white-space: nowrap; font-size: 12px; color: #718077; padding: 8px 12px; background: #e8ede8; border-radius: 20px; }
 .connection-badge span { display: inline-block; width: 6px; height: 6px; background: #88988d; border-radius: 50%; margin-right: 7px; }
 .connection-badge.online { color: #21614d; background: #deeee3; }

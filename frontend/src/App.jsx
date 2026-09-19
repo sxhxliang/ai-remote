@@ -5,12 +5,49 @@ import './style.css';
 
 const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 const initialConfig = {
-  signalingUrl: local ? 'ws://127.0.0.1:8080/ws' : 'wss://' + location.host + '/ws',
-  room: 'my-room', token: '', model: 'qwen2.5:7b',
+  signalingUrl: local ? 'ws://127.0.0.1:8080/ws' : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws',
+  room: 'default', token: '', model: 'qwen2.5:7b',
   stunUrls: '', turnUrls: '', turnUsername: '', turnCredential: '', forceRelay: false,
 };
 const stateLabels = { disconnected: '未连接', connecting: '正在连接', waiting: '等待家里的 Agent', connected: '已连接', reconnecting: '正在重新连接', error: '连接失败' };
 const urls = (text) => text.split(/[\s,]+/).filter(Boolean);
+
+function parseUrlConfig() {
+  if (typeof window === 'undefined') return {};
+  const params = new URLSearchParams(window.location.search);
+  const hash = window.location.hash.startsWith('#')
+    ? new URLSearchParams(window.location.hash.slice(1))
+    : new URLSearchParams();
+  const get = (key, ...aliases) => {
+    for (const k of [key, ...aliases]) {
+      if (hash.has(k)) return hash.get(k);
+      if (params.has(k)) return params.get(k);
+    }
+    return null;
+  };
+  const cfg = {};
+  const room = get('room', 'r');
+  if (room) cfg.room = room;
+  const token = get('token', 't');
+  if (token) cfg.token = token;
+  const signalingUrl = get('signalingUrl', 'signaling', 's', 'ws');
+  if (signalingUrl) cfg.signalingUrl = signalingUrl;
+  const model = get('model', 'm');
+  if (model) cfg.model = model;
+  const stunUrls = get('stunUrls', 'stun');
+  if (stunUrls) cfg.stunUrls = stunUrls;
+  const turnUrls = get('turnUrls', 'turn');
+  if (turnUrls) cfg.turnUrls = turnUrls;
+  const turnUsername = get('turnUsername', 'turnUser', 'u');
+  if (turnUsername) cfg.turnUsername = turnUsername;
+  const turnCredential = get('turnCredential', 'turnPass', 'p');
+  if (turnCredential) cfg.turnCredential = turnCredential;
+  const forceRelay = get('forceRelay', 'relay');
+  if (forceRelay !== null) cfg.forceRelay = forceRelay === 'true' || forceRelay === '1';
+  const autoConnect = get('auto', 'autoConnect');
+  if (autoConnect !== null) cfg.autoConnect = autoConnect === 'true' || autoConnect === '1';
+  return cfg;
+}
 
 export default function App() {
   const [config, setConfig] = useState(initialConfig);
@@ -30,14 +67,89 @@ export default function App() {
   const bottomRef = useRef(null);
   const connected = state === 'connected';
 
+  const doConnect = async (activeConfig) => {
+    setError('');
+    const c = activeConfig || config;
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(c.room.trim()) || c.token.length < 16) {
+      setError('房间号需为 1–64 个字母、数字、短横线或下划线，Token 至少 16 个字符');
+      return;
+    }
+    const iceServers = [];
+    if (urls(c.stunUrls).length) iceServers.push({ urls: urls(c.stunUrls) });
+    if (urls(c.turnUrls).length) iceServers.push({ urls: urls(c.turnUrls), username: c.turnUsername, credential: c.turnCredential });
+    if (c.forceRelay && !urls(c.turnUrls).length) {
+      setError('仅使用中继时，需要填写 TURN 地址和凭据');
+      return;
+    }
+    if (urls(c.turnUrls).length && (!c.turnUsername || !c.turnCredential)) {
+      setError('请填写 TURN 用户名和密码');
+      return;
+    }
+    const action = ++connectionActionRef.current;
+    const previous = clientRef.current;
+    clientRef.current = null;
+    abortRef.current?.abort();
+    setRoute('');
+    setModels([]);
+    setState('connecting');
+    if (previous) closingRef.current = previous.disconnect();
+    await closingRef.current;
+    if (!mountedRef.current || action !== connectionActionRef.current) return;
+    const client = new OllamaRemoteClient({
+      signalingUrl: c.signalingUrl.trim(), room: c.room.trim(), token: c.token,
+      iceServers, forceRelay: c.forceRelay,
+      onState: (next, detail) => {
+        if (!mountedRef.current || client !== clientRef.current) return;
+        setState(next);
+        if (detail.error) setError(detail.error);
+        if (next === 'connected') {
+          setError('');
+          loadModels(client);
+          client.getConnectionInfo().then((info) => {
+            if (client === clientRef.current && mountedRef.current) setRoute(info?.relay ? 'TURN 中继' : '直接连接');
+          }).catch(() => {});
+        }
+      },
+    });
+    clientRef.current = client;
+    try { await client.connect(); } catch (failure) {
+      if (client === clientRef.current && mountedRef.current) setError(failure.message);
+    }
+  };
+
+  const handleConnect = () => doConnect(config);
+
   useEffect(() => {
     mountedRef.current = true;
     let cancelled = false;
+    const urlConfig = parseUrlConfig();
+    let current = { ...initialConfig, ...urlConfig };
+    if (Object.keys(urlConfig).length > 0) {
+      setConfig((previous) => {
+        current = { ...previous, ...urlConfig };
+        return current;
+      });
+    }
+
     if (import.meta.env.DEV && local) {
       fetch('/__local/config').then((response) => response.ok ? response.json() : null).then((value) => {
-        if (value && !cancelled) setConfig((previous) => ({ ...previous, ...value }));
+        if (value && !cancelled) {
+          setConfig((previous) => {
+            current = { ...previous, ...value };
+            return current;
+          });
+        }
       }).catch(() => {});
     }
+
+    if (urlConfig.room && urlConfig.token && urlConfig.autoConnect !== false) {
+      setTimeout(() => {
+        if (mountedRef.current && state === 'disconnected') {
+          doConnect(current);
+        }
+      }, 100);
+    }
+
     const cleanup = () => {
       ++connectionActionRef.current;
       abortRef.current?.abort();
@@ -67,55 +179,6 @@ export default function App() {
       setModels(names);
       setConfig((previous) => ({ ...previous, model: names.includes(previous.model) ? previous.model : names[0] || previous.model }));
     } catch (failure) {
-      if (client === clientRef.current && mountedRef.current) setError(failure.message);
-    }
-  };
-
-  const handleConnect = async () => {
-    setError('');
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(config.room.trim()) || config.token.length < 16) {
-      setError('房间号需为 1–64 个字母、数字、短横线或下划线，Token 至少 16 个字符');
-      return;
-    }
-    const iceServers = [];
-    if (urls(config.stunUrls).length) iceServers.push({ urls: urls(config.stunUrls) });
-    if (urls(config.turnUrls).length) iceServers.push({ urls: urls(config.turnUrls), username: config.turnUsername, credential: config.turnCredential });
-    if (config.forceRelay && !urls(config.turnUrls).length) {
-      setError('仅使用中继时，需要填写 TURN 地址和凭据');
-      return;
-    }
-    if (urls(config.turnUrls).length && (!config.turnUsername || !config.turnCredential)) {
-      setError('请填写 TURN 用户名和密码');
-      return;
-    }
-    const action = ++connectionActionRef.current;
-    const previous = clientRef.current;
-    clientRef.current = null;
-    abortRef.current?.abort();
-    setRoute('');
-    setModels([]);
-    setState('connecting');
-    if (previous) closingRef.current = previous.disconnect();
-    await closingRef.current;
-    if (!mountedRef.current || action !== connectionActionRef.current) return;
-    const client = new OllamaRemoteClient({
-      signalingUrl: config.signalingUrl.trim(), room: config.room.trim(), token: config.token,
-      iceServers, forceRelay: config.forceRelay,
-      onState: (next, detail) => {
-        if (!mountedRef.current || client !== clientRef.current) return;
-        setState(next);
-        if (detail.error) setError(detail.error);
-        if (next === 'connected') {
-          setError('');
-          loadModels(client);
-          client.getConnectionInfo().then((info) => {
-            if (client === clientRef.current && mountedRef.current) setRoute(info?.relay ? 'TURN 中继' : '直接连接');
-          }).catch(() => {});
-        }
-      },
-    });
-    clientRef.current = client;
-    try { await client.connect(); } catch (failure) {
       if (client === clientRef.current && mountedRef.current) setError(failure.message);
     }
   };
@@ -187,7 +250,10 @@ export default function App() {
     <main className="app">
       <header className="app-header">
         <div><span className="eyebrow">YOUR MODEL, AT HOME</span><h1>远程 Ollama</h1><p>在浏览器里，与家里的模型对话。</p></div>
-        <div className={'connection-badge ' + (connected ? 'online' : '')} role="status"><span />{stateLabels[state]}{connected && route ? ' · ' + route : ''}</div>
+        <div className="header-actions">
+          <a href="/setup" target="_blank" rel="noreferrer" className="setup-link" title="查看配置与接入指南">⚙️ 配置与接入</a>
+          <div className={'connection-badge ' + (connected ? 'online' : '')} role="status"><span />{stateLabels[state]}{connected && route ? ' · ' + route : ''}</div>
+        </div>
       </header>
       {config.mock && <div className="mock-banner">当前使用本地 Mock Ollama，返回固定测试内容。</div>}
       <details className="settings" open={!connected}>

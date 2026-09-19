@@ -29,8 +29,8 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
@@ -42,7 +42,7 @@ jobs:
       - run: node --test scripts/release.test.mjs
       - run: sh -n install.sh
       - run: npm --prefix frontend run build
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v4
         with:
           name: frontend
           path: frontend/dist/
@@ -86,15 +86,15 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - name: Set up Rust
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt --component clippy --target "$TARGET"
           rustup override set "$RUST_VERSION"
-      - uses: actions/cache@v6.1.0
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -102,10 +102,16 @@ jobs:
             .build/target
           key: rust-${{ runner.os }}-${{ matrix.target }}-${{ env.RUST_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-${{ matrix.target }}-${{ env.RUST_VERSION }}-
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@v4
         with:
           name: frontend
           path: frontend/dist
+      - name: Ensure frontend is built for signaling server embedding
+        run: |
+          if [ ! -f "frontend/dist/index.html" ]; then
+            npm --prefix frontend ci
+            npm --prefix frontend run build
+          fi
       - name: Format, lint, test and build Rust services
         run: |
           for crate in home-agent signaling-server turn-server; do
@@ -128,7 +134,7 @@ jobs:
         run: node scripts/package-release.mjs --target "$TARGET" --version "$BUILD_VERSION" --bin-dir "$CARGO_TARGET_DIR/$TARGET/release"
       - name: Verify installation, upgrades and checksum rejection
         run: node scripts/test-installers.mjs --target "$TARGET" --version "$BUILD_VERSION"
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v4
         with:
           name: package-${{ matrix.target }}
           path: |
@@ -152,11 +158,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@v4
         with:
           pattern: package-*
           path: .artifacts

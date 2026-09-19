@@ -207,10 +207,14 @@ async fn main() -> Result<()> {
     }
     tracing_subscriber::fmt::init();
     let public_ip: IpAddr = env::var("PUBLIC_IP")
-        .context("PUBLIC_IP is required")?
+        .unwrap_or_else(|_| "127.0.0.1".into())
         .parse()?;
-    let user = env::var("TURN_USER").context("TURN_USER is required")?;
-    let password = env::var("TURN_PASS").context("TURN_PASS is required")?;
+    let user = env::var("TURN_USER").unwrap_or_else(|_| "ollama-link".into());
+    let mut password = env::var("TURN_PASS").unwrap_or_default();
+    let auto_generated_pass = password.is_empty();
+    if auto_generated_pass {
+        password = uuid::Uuid::new_v4().simple().to_string();
+    }
     ensure!(
         !user.is_empty() && user.len() <= 64 && password.len() >= 16,
         "Use TURN_USER and a TURN_PASS of at least 16 characters"
@@ -247,6 +251,7 @@ async fn main() -> Result<()> {
         env::var("TURN_TLS_BIND").is_err() || tls.is_some(),
         "TURN_TLS_BIND requires TLS_CERT and TLS_KEY"
     );
+    let has_tls = tls.is_some();
     let config = Arc::new(Config {
         public_ip,
         relay_bind: env::var("RELAY_BIND").unwrap_or_else(|_| "0.0.0.0".into()),
@@ -307,6 +312,25 @@ async fn main() -> Result<()> {
             slots,
         ));
     }
+
+    println!();
+    println!("================================================================================");
+    println!("  🔄 AI Remote TURN 服务器已启动！[免配置模式 / Zero-Config]");
+    println!("================================================================================");
+    println!("  🌐 中继公网 IP:   {public_ip}");
+    println!("  👤 TURN 用户名:    {user}");
+    println!("  🔑 TURN 凭据密码:  {password}");
+    if auto_generated_pass {
+        println!("     (⚠️ 此密码为自动生成，开箱即用)");
+    }
+    println!("  📡 UDP 监听:       {udp_bind}");
+    println!("  🔌 TCP 监听:       {tcp_bind}");
+    if has_tls {
+        println!("  🔒 TLS/HTTPS 监听: 443 (支持单端口复用 HTTPS 网页与 TURNS 中继)");
+    }
+    println!("================================================================================");
+    println!();
+
     let result = tokio::select! {
         _ = shutdown.cancelled() => Ok(()),
         result = listeners.join_next() => match result {

@@ -57,8 +57,44 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let mut signaling =
-            Url::parse(&env::var("SIGNALING_URL").context("SIGNALING_URL is required")?)?;
+        let args: Vec<String> = env::args().collect();
+        let mut cli_url = None;
+        let mut cli_token = None;
+        let mut cli_room = None;
+        let mut i = 1;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--url" | "-u" if i + 1 < args.len() => {
+                    cli_url = Some(args[i + 1].clone());
+                    i += 2;
+                }
+                "--token" | "-t" if i + 1 < args.len() => {
+                    cli_token = Some(args[i + 1].clone());
+                    i += 2;
+                }
+                "--room" | "-r" if i + 1 < args.len() => {
+                    cli_room = Some(args[i + 1].clone());
+                    i += 2;
+                }
+                arg if !arg.starts_with('-') && cli_url.is_none() => {
+                    cli_url = Some(arg.to_string());
+                    i += 1;
+                }
+                arg if !arg.starts_with('-') && cli_token.is_none() => {
+                    cli_token = Some(arg.to_string());
+                    i += 1;
+                }
+                arg if !arg.starts_with('-') && cli_room.is_none() => {
+                    cli_room = Some(arg.to_string());
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        let signaling_raw = cli_url
+            .or_else(|| env::var("SIGNALING_URL").ok())
+            .context("SIGNALING_URL is required (set via env or pass as argument: ai-remote-agent <url> <token>)")?;
+        let mut signaling = Url::parse(&signaling_raw)?;
         ensure!(
             matches!(signaling.scheme(), "ws" | "wss"),
             "SIGNALING_URL must use ws:// or wss://"
@@ -67,8 +103,12 @@ impl Config {
             signaling.username().is_empty() && signaling.password().is_none(),
             "Use SIGNALING_TOKEN instead of URL credentials"
         );
-        let room = env::var("ROOM_ID").context("ROOM_ID is required")?;
-        let token = env::var("SIGNALING_TOKEN").context("SIGNALING_TOKEN is required")?;
+        let room = cli_room
+            .or_else(|| env::var("ROOM_ID").ok())
+            .unwrap_or_else(|| "default".into());
+        let token = cli_token
+            .or_else(|| env::var("SIGNALING_TOKEN").ok())
+            .context("SIGNALING_TOKEN is required (set via env or pass as argument: ai-remote-agent <url> <token>)")?;
         ensure!(
             !room.is_empty()
                 && room.len() <= 64

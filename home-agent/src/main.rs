@@ -215,6 +215,9 @@ async fn main() -> Result<()> {
     }
     tracing_subscriber::fmt::init();
     let config = Arc::new(Config::from_env()?);
+    println!("🏠 AI Remote 家里电脑 Agent 已启动！");
+    println!("🔗 正在连接信令服务器: {}", config.signaling);
+    println!("🤖 本地 Ollama 接口: {}", config.base);
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     tokio::spawn(async move {
