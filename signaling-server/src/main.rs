@@ -959,16 +959,18 @@ async fn main() -> anyhow::Result<()> {
         app.fallback(get(fallback_page_handler))
     };
 
-    let bind = env::var("SIGNALING_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
+    let bind = env::var("SIGNALING_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     let local_addr = listener.local_addr()?;
     tracing::info!("signaling server listening on {}", local_addr);
 
     let (host, http_proto, ws_proto) = resolve_host_info(&HeaderMap::new(), &state.public_host);
-    let display_host = if state.public_host.is_empty() {
-        local_addr.to_string()
-    } else {
+    let display_host = if !state.public_host.is_empty() {
         host
+    } else if local_addr.ip().is_unspecified() {
+        format!("<YOUR_SERVER_IP>:{}", local_addr.port())
+    } else {
+        local_addr.to_string()
     };
     let token_preview = if let Some(t) = state.room_tokens.get(default_room.as_str()) {
         t.as_str()
