@@ -176,7 +176,7 @@ EOF
     printf "  🔌 WebSocket 接口: ${CYAN}%s${NC}\n" "$ws_url"
     printf "  🔑 默认房间:       ${BOLD}default${NC}\n"
     printf "  🛡️  访问 Token:     ${YELLOW}%s${NC}\n" "$token"
-    printf "--------------------------------------------------------------------------------\n"
+    printf '%s\n' "--------------------------------------------------------------------------------"
     printf "  🌐 ${BOLD}[公司电脑] 浏览器打开一键直达 (配置自动填充):${NC}\n"
     printf "     ${CYAN}%s${NC}\n\n" "$web_url"
     printf "  ⚙️  ${BOLD}[Web 控制中心] 实时监控与密钥管理:${NC}\n"
