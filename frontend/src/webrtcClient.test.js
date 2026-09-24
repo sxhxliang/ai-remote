@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
-import { OllamaRemoteClient } from './webrtcClient.js';
+import { OllamaRemoteClient, safeRandomUUID, sanitizeIceServers, mergeIceServers } from './webrtcClient.js';
 import { readNdjson } from './ndjson.js';
 import { Ollama } from 'ollama/browser';
 
@@ -278,4 +278,75 @@ test('official Ollama SDK streams chat through the injected fetch', async () => 
   for await (const part of response) text += part.message.content;
   assert.equal(text, '你好');
   assert.equal(client.pending.size, 0);
+});
+
+test('safeRandomUUID works even when crypto.randomUUID is undefined (insecure HTTP contexts)', () => {
+  const original = crypto.randomUUID;
+  try {
+    // Emulate insecure HTTP context (e.g. http://<ip>:8080) where crypto.randomUUID is undefined
+    delete crypto.randomUUID;
+    const uuid = safeRandomUUID();
+    assert.match(uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  } finally {
+    crypto.randomUUID = original;
+  }
+});
+
+test('server ICE entries are validated, deduplicated, and public STUN is only a fallback', () => {
+  assert.deepEqual(
+    sanitizeIceServers([{ urls: 'stun:a:3478' }, { urls: ['turn:a:3478'], username: 'u', credential: 'p' }, { urls: ['turn:b:3478'] }, { urls: ['https://x'] }, null]),
+    [{ urls: ['stun:a:3478'] }, { urls: ['turn:a:3478'], username: 'u', credential: 'p' }],
+  );
+  assert.deepEqual(sanitizeIceServers('not-a-list'), []);
+  assert.deepEqual(
+    mergeIceServers([{ urls: ['stun:a:3478'] }], [{ urls: ['stun:a:3478', 'stun:b:3478'] }]),
+    [{ urls: ['stun:a:3478'] }, { urls: ['stun:b:3478'] }],
+  );
+  assert.deepEqual(mergeIceServers([], []), [{ urls: ['stun:stun.miwifi.com:3478', 'stun:stun.cloudflare.com:3478'] }]);
+});
+
+function signalingWith(ready, onOffer) {
+  return class {
+    static OPEN = 1;
+    readyState = 1;
+    constructor() { queueMicrotask(() => { this.onopen?.(); this.deliver({ type: 'ready', protocol: 1, peerOnline: true, ...ready }); }); }
+    deliver(message) { this.onmessage?.({ data: JSON.stringify(message) }); }
+    send(raw) { const frame = JSON.parse(raw); if (frame.type === 'offer') onOffer?.(this, frame); }
+    close() { this.readyState = 3; this.onclose?.(); }
+  };
+}
+
+test('ICE servers from the authenticated ready message are used without local settings', async () => {
+  const originals = [globalThis.WebSocket, globalThis.RTCPeerConnection];
+  const configs = [];
+  globalThis.RTCPeerConnection = class {
+    remoteDescription = null;
+    constructor(config) { configs.push(config); }
+    createDataChannel() { this.channel = new Channel(); this.channel.readyState = 'connecting'; return this.channel; }
+    async createOffer() { return { sdp: 'offer' }; }
+    async setLocalDescription() {}
+    async setRemoteDescription(value) { this.remoteDescription = value; this.channel.readyState = 'open'; this.channel.onopen?.(); }
+    async addIceCandidate() {}
+    close() {}
+  };
+  const turn = { urls: ['turn:vps:3478?transport=udp', 'turn:vps:3478?transport=tcp'], username: 'u', credential: 'p' };
+  globalThis.WebSocket = signalingWith(
+    { iceServers: [{ urls: ['stun:vps:3478'] }, turn, { urls: 'http://bad' }, { urls: 'turn:no-credentials' }] },
+    (socket, offer) => socket.deliver({ type: 'answer', session: offer.session, sdp: 'answer' }),
+  );
+  const client = new OllamaRemoteClient({ signalingUrl: 'ws://localhost/ws', room: 'r', token: 'test', autoReconnect: false, forceRelay: true, iceServers: [{ urls: ['stun:vps:3478'] }] });
+  try {
+    await client.connect();
+    assert.deepEqual(configs[0], { iceServers: [{ urls: ['stun:vps:3478'] }, turn], iceTransportPolicy: 'relay' });
+  } finally { await client.disconnect(); [globalThis.WebSocket, globalThis.RTCPeerConnection] = originals; }
+});
+
+test('forced relay without any TURN server fails with an actionable message', async () => {
+  const originals = [globalThis.WebSocket, globalThis.RTCPeerConnection];
+  globalThis.RTCPeerConnection = class { constructor() { throw new Error('must not create a peer connection'); } };
+  globalThis.WebSocket = signalingWith({ iceServers: [{ urls: ['stun:vps:3478'] }] });
+  const client = new OllamaRemoteClient({ signalingUrl: 'ws://localhost/ws', room: 'r', token: 'test', autoReconnect: false, forceRelay: true });
+  try {
+    await assert.rejects(client.connect(), /仅使用中继需要 TURN/);
+  } finally { await client.disconnect(); [globalThis.WebSocket, globalThis.RTCPeerConnection] = originals; }
 });

@@ -45,6 +45,37 @@ generate_token() {
   fi
 }
 
+# 读取已有配置中的值：重复部署时沿用旧密钥，避免已接入的 Agent 和浏览器失效
+read_env_value() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  { grep -E "^${key}=" "$file" || true; } | tail -n1 | cut -d= -f2-
+}
+
+# enable --now 不会重启已在运行的服务，改写的配置不会生效，因此显式 restart
+start_service() {
+  systemctl daemon-reload
+  systemctl enable "$1" >/dev/null 2>&1
+  systemctl restart "$1"
+}
+
+# 把 TURN 配置写入信令配置；信令服务在鉴权后把它下发给浏览器与家里 Agent
+sync_turn_to_signaling() {
+  local pub_ip="$1" turn_user="$2" turn_pass="$3"
+  local sig_env="/etc/ollama-link/signaling.env"
+  [ -f "$sig_env" ] && [ -n "$pub_ip" ] && [ -n "$turn_pass" ] || return 0
+  grep -v -E '^(STUN_URL|TURN_URL|TURN_USER|TURN_PASS)=' "$sig_env" > "${sig_env}.tmp" || true
+  cat >> "${sig_env}.tmp" <<EOF
+STUN_URL=stun:${pub_ip}:3478
+TURN_URL=turn:${pub_ip}:3478?transport=udp,turn:${pub_ip}:3478?transport=tcp
+TURN_USER=${turn_user:-ollama-link}
+TURN_PASS=${turn_pass}
+EOF
+  mv "${sig_env}.tmp" "$sig_env"
+  chmod 640 "$sig_env"
+  chown root:ollama-link "$sig_env" 2>/dev/null || true
+}
+
 # 获取本机公网 IPv4
 get_public_ip() {
   local ip=""
@@ -110,13 +141,13 @@ deploy_signaling() {
 
   local pub_ip
   pub_ip=$(get_public_ip)
-  local token="${SIGNALING_TOKEN:-}"
+  local env_file="/etc/ollama-link/signaling.env"
+  local token="${SIGNALING_TOKEN:-$(read_env_value "$env_file" SIGNALING_TOKEN)}"
   if [ -z "$token" ]; then
     token=$(generate_token)
   fi
 
   local bind="${SIGNALING_BIND:-0.0.0.0:8080}"
-  local env_file="/etc/ollama-link/signaling.env"
   local service_file="/etc/systemd/system/ollama-link-signaling.service"
 
   # 写入配置文件
@@ -159,13 +190,17 @@ LimitNOFILE=8192
 WantedBy=multi-user.target
 EOF
 
-  systemctl daemon-reload
-  systemctl enable --now ollama-link-signaling
+  # 重写信令配置后，若 TURN 已部署则重新同步中继设置
+  local turn_env="/etc/ollama-link/turn.env"
+  if [ -f "$turn_env" ]; then
+    sync_turn_to_signaling "$(read_env_value "$turn_env" PUBLIC_IP)" "$(read_env_value "$turn_env" TURN_USER)" "$(read_env_value "$turn_env" TURN_PASS)"
+  fi
+  start_service ollama-link-signaling
 
   sleep 1
   if systemctl is-active --quiet ollama-link-signaling; then
     local web_url="http://${pub_ip}:8080/#room=default&token=${token}"
-    local setup_url="http://${pub_ip}:8080/setup"
+    local setup_url="http://${pub_ip}:8080/setup#token=${token}"
     local ws_url="ws://${pub_ip}:8080/ws"
 
     printf "\n"
@@ -183,6 +218,7 @@ EOF
     printf "     ${CYAN}%s${NC}\n\n" "$setup_url"
     printf "  🏠 ${BOLD}[家里电脑] Agent 一键接入指令 (复制到家里电脑终端运行):${NC}\n"
     printf "     ${BOLD}ai-remote-agent %s %s${NC}\n" "$ws_url" "$token"
+    printf "  🧱 ${BOLD}云服务器安全组需放行:${NC} 8080/TCP；部署 TURN 后还需 3478/UDP、3478/TCP、49160-49200/UDP\n"
     printf "${GREEN}================================================================================${NC}\n\n"
   else
     log_err "信令服务启动失败，查看日志排查问题："
@@ -255,15 +291,15 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK: ICE 通过 getifaddrs 枚举本机网卡，缺少它会没有本机候选地址
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 LimitNOFILE=8192
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  systemctl daemon-reload
-  systemctl enable --now ollama-link-home-agent
+  start_service ollama-link-home-agent
 
   sleep 1
   if systemctl is-active --quiet ollama-link-home-agent; then
@@ -275,6 +311,7 @@ EOF
     printf "  🔌 连接信令:       %s\n" "$ws_url"
     printf "  🔑 房间号:         %s\n" "$room"
     printf "  🦙 本地 Ollama:    http://127.0.0.1:11434\n"
+    printf "  🧭 STUN/TURN:      由信令服务在连接时自动下发，无需在此配置\n"
     printf "  📋 查看实时日志:   journalctl -u ollama-link-home-agent -f\n"
     printf "${GREEN}================================================================================${NC}\n\n"
   else
@@ -295,12 +332,11 @@ deploy_turn() {
 
   local pub_ip
   pub_ip=$(get_public_ip)
-  local turn_pass="${TURN_PASS:-}"
+  local env_file="/etc/ollama-link/turn.env"
+  local turn_pass="${TURN_PASS:-$(read_env_value "$env_file" TURN_PASS)}"
   if [ -z "$turn_pass" ]; then
     turn_pass=$(generate_token)
   fi
-
-  local env_file="/etc/ollama-link/turn.env"
   local service_file="/etc/systemd/system/ollama-link-turn.service"
 
   cat > "$env_file" <<EOF
@@ -347,24 +383,13 @@ LimitNOFILE=8192
 WantedBy=multi-user.target
 EOF
 
-  systemctl daemon-reload
-  systemctl enable --now ollama-link-turn
+  start_service ollama-link-turn
 
   sleep 1
   if systemctl is-active --quiet ollama-link-turn; then
-    # 若信令服务已存在，自动将 TURN 配置同步给信令服务与 Web 前端
-    local sig_env="/etc/ollama-link/signaling.env"
-    if [ -f "$sig_env" ]; then
-      grep -v '^STUN_URL=' "$sig_env" | grep -v '^TURN_URL=' | grep -v '^TURN_USER=' | grep -v '^TURN_PASS=' > "${sig_env}.tmp" || true
-      cat >> "${sig_env}.tmp" <<EOF
-STUN_URL=stun:${pub_ip}:3478
-TURN_URL=turn:${pub_ip}:3478?transport=udp
-TURN_USER=ollama-link
-TURN_PASS=${turn_pass}
-EOF
-      mv "${sig_env}.tmp" "$sig_env"
-      chmod 640 "$sig_env"
-      chown root:ollama-link "$sig_env" 2>/dev/null || true
+    # 若信令服务已存在，同步 TURN 配置并重启，使浏览器与 Agent 连接时获取新配置
+    if [ -f /etc/ollama-link/signaling.env ]; then
+      sync_turn_to_signaling "$pub_ip" ollama-link "$turn_pass"
       systemctl restart ollama-link-signaling 2>/dev/null || true
     fi
 
@@ -377,7 +402,8 @@ EOF
     printf "  🔌 STUN/TURN 端口: 3478 (UDP/TCP)\n"
     printf "  👤 TURN 用户名:    ollama-link\n"
     printf "  🔑 TURN 密码:      %s\n" "$turn_pass"
-    printf "  💡 已将中继配置同步给信令服务与 Web 控制面板，前端已自动就绪。\n"
+    printf "  💡 已将中继配置同步给信令服务，浏览器与家里 Agent 连接时会自动获取。\n"
+    printf "  🧱 ${BOLD}云服务器安全组需放行:${NC} 3478/UDP、3478/TCP、49160-49200/UDP\n"
     printf "${GREEN}================================================================================${NC}\n\n"
   else
     log_err "TURN 服务启动失败，查看日志："

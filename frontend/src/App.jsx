@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { OllamaRemoteClient } from './webrtcClient.js';
+import { OllamaRemoteClient, safeRandomUUID } from './webrtcClient.js';
 import { readNdjson } from './ndjson.js';
 import './style.css';
 
@@ -77,10 +77,6 @@ export default function App() {
     const iceServers = [];
     if (urls(c.stunUrls).length) iceServers.push({ urls: urls(c.stunUrls) });
     if (urls(c.turnUrls).length) iceServers.push({ urls: urls(c.turnUrls), username: c.turnUsername, credential: c.turnCredential });
-    if (c.forceRelay && !urls(c.turnUrls).length) {
-      setError('仅使用中继时，需要填写 TURN 地址和凭据');
-      return;
-    }
     if (urls(c.turnUrls).length && (!c.turnUsername || !c.turnCredential)) {
       setError('请填写 TURN 用户名和密码');
       return;
@@ -202,8 +198,8 @@ export default function App() {
     setError('');
     const controller = new AbortController();
     abortRef.current = controller;
-    const user = { id: crypto.randomUUID(), role: 'user', content: input.trim() };
-    const assistantId = crypto.randomUUID();
+    const user = { id: safeRandomUUID(), role: 'user', content: input.trim() };
+    const assistantId = safeRandomUUID();
     const history = [...messages.filter((message) => !message.error), user].map(({ role, content }) => ({ role, content }));
     setMessages((previous) => [...previous, user, { id: assistantId, role: 'assistant', model: config.model, content: '' }]);
     setInput('');
@@ -262,8 +258,8 @@ export default function App() {
           <label className="wide">信令地址<input value={config.signalingUrl} onChange={update('signalingUrl')} placeholder="wss://chat.example.com/ws" /></label>
           <label>房间号<input value={config.room} onChange={update('room')} autoComplete="off" /></label>
           <label>Token<input type="password" value={config.token} onChange={update('token')} autoComplete="off" /></label>
-          <label className="wide">STUN 地址（可选）<input value={config.stunUrls} onChange={update('stunUrls')} placeholder="stun:turn.example.com:3478" /></label>
-          <label className="wide">TURN 地址（多个地址用逗号分隔）<input value={config.turnUrls} onChange={update('turnUrls')} placeholder="turns:turn.example.com:443?transport=tcp" /></label>
+          <label className="wide">STUN 地址（可选，信令服务器会自动下发）<input value={config.stunUrls} onChange={update('stunUrls')} placeholder="stun:turn.example.com:3478" /></label>
+          <label className="wide">TURN 地址（可选，信令服务器会自动下发；多个地址用逗号分隔）<input value={config.turnUrls} onChange={update('turnUrls')} placeholder="turns:turn.example.com:443?transport=tcp" /></label>
           <label>TURN 用户名<input value={config.turnUsername} onChange={update('turnUsername')} autoComplete="off" /></label>
           <label>TURN 密码<input type="password" value={config.turnCredential} onChange={update('turnCredential')} autoComplete="off" /></label>
           <label className="check wide"><input type="checkbox" checked={config.forceRelay} onChange={update('forceRelay')} />仅使用中继，用于受限网络或中继测试</label>

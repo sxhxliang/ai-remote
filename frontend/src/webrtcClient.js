@@ -6,6 +6,57 @@ const MAX_REQUEST = 8 * 1024 * 1024;
 const encodeBytes = (bytes) => btoa(String.fromCharCode(...bytes));
 const decodeBytes = (text) => Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
 const abortError = () => new DOMException('请求已取消', 'AbortError');
+const DEFAULT_STUN_URLS = ['stun:stun.miwifi.com:3478', 'stun:stun.cloudflare.com:3478'];
+const MAX_ICE_ENTRIES = 8;
+
+// ICE servers pushed by the signaling server in `ready`, after token authentication.
+// Anything a browser would reject is dropped, because one bad entry makes RTCPeerConnection throw.
+export function sanitizeIceServers(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_ICE_ENTRIES).flatMap((server) => {
+    const urls = [].concat(server?.urls ?? []).filter((url) => typeof url === 'string' && /^(stun|turns?):/.test(url)).slice(0, MAX_ICE_ENTRIES);
+    if (!urls.length) return [];
+    if (!urls.some((url) => url.startsWith('turn'))) return [{ urls }];
+    if (typeof server.username !== 'string' || typeof server.credential !== 'string') return [];
+    return [{ urls, username: server.username, credential: server.credential }];
+  });
+}
+
+// Local settings first, then server-provided servers without duplicate URLs.
+// Public STUN is only a last resort when neither side configured anything.
+export function mergeIceServers(local = [], remote = []) {
+  const seen = new Set();
+  const merged = [];
+  for (const server of [...local, ...remote]) {
+    const urls = [].concat(server.urls).filter((url) => !seen.has(url));
+    urls.forEach((url) => seen.add(url));
+    if (urls.length) merged.push({ ...server, urls });
+  }
+  return merged.length ? merged : [{ urls: DEFAULT_STUN_URLS }];
+}
+
+const hasRelay = (servers) => servers.some((server) => [].concat(server.urls).some((url) => /^turns?:/.test(url)));
+
+export function safeRandomUUID() {
+  if (typeof crypto !== 'undefined') {
+    if (typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    if (typeof crypto.getRandomValues === 'function') {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 async function readRequestBody(body, signal) {
   if (!body) return null;
@@ -48,6 +99,7 @@ export class OllamaRemoteClient {
     this.everConnected = false;
     this.retry = 0;
     this.session = null;
+    this.serverIceServers = [];
     this.fetch = this.ollamaFetch.bind(this);
   }
 
@@ -129,6 +181,7 @@ export class OllamaRemoteClient {
   async _signalMessage(message) {
     if (message.type === 'ready') {
       if (message.protocol !== 1) throw new Error('不兼容的信令协议版本');
+      this.serverIceServers = sanitizeIceServers(message.iceServers);
       if (message.peerOnline) await this._negotiate();
       else this._state('waiting');
     } else if (message.type === 'peer-joined') {
@@ -160,12 +213,14 @@ export class OllamaRemoteClient {
 
   async _negotiate() {
     if (this.pc) return;
-    const session = crypto.randomUUID();
+    const iceServers = mergeIceServers(this.iceServers, this.serverIceServers);
+    if (this.forceRelay && !hasRelay(iceServers)) throw new Error('仅使用中继需要 TURN：请在连接设置中填写 TURN 地址，或在信令服务器配置 TURN_URL');
+    const session = safeRandomUUID();
     this.session = session;
     this.remoteCandidates = [];
     const localCandidates = [];
     let offered = false;
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers, iceTransportPolicy: this.forceRelay ? 'relay' : 'all' });
+    const pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: this.forceRelay ? 'relay' : 'all' });
     this.pc = pc;
     const dc = pc.createDataChannel('ollama', { ordered: true });
     this.dc = dc;
@@ -391,7 +446,7 @@ export class OllamaRemoteClient {
     const url = new URL(request.url);
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error('不支持的请求 URL');
     if (this.pending.size >= 4) throw new Error('同时最多支持 4 个请求');
-    const id = crypto.randomUUID();
+    const id = safeRandomUUID();
     const channel = this.dc;
     let resolve;
     let reject;

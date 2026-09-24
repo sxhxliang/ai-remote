@@ -1,5 +1,6 @@
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
+use serde_json::Value;
 use std::{collections::HashSet, env, time::Duration};
 use url::Url;
 use webrtc::{
@@ -200,14 +201,9 @@ impl Config {
                 );
             }
         }
+        // TURN may also come from the signaling server, so FORCE_RELAY is
+        // checked per connection in `merge_rtc_configuration` instead.
         let relay = env::var("FORCE_RELAY").is_ok_and(|v| v == "true" || v == "1");
-        ensure!(
-            !relay
-                || ice_servers
-                    .iter()
-                    .any(|s| s.urls.iter().any(|u| u.starts_with("turn:"))),
-            "FORCE_RELAY requires a TURN-over-UDP URL on the home agent"
-        );
         let rtc = RTCConfiguration {
             ice_servers,
             ice_transport_policy: if relay {
@@ -239,6 +235,90 @@ impl Config {
     pub fn request_url(&self, method: &str, path: &str) -> Result<Url> {
         validate_path(&self.base, &self.allowed, method, path)
     }
+
+    pub fn rtc_configuration(&self, signaled: &[RTCIceServer]) -> RTCConfiguration {
+        merge_rtc_configuration(&self.rtc, signaled)
+    }
+}
+
+const DEFAULT_STUN_URLS: [&str; 2] = ["stun:stun.cloudflare.com:3478", "stun:stun.miwifi.com:3478"];
+const MAX_SIGNALED_ICE_ENTRIES: usize = 8;
+
+/// webrtc-rs only speaks STUN and TURN over UDP; TCP/TLS TURN stays browser-only.
+fn udp_ice_url(url: &str) -> bool {
+    (url.starts_with("stun:") || url.starts_with("turn:")) && !url.contains("transport=tcp")
+}
+
+/// Keeps the usable entries of the browser-style `iceServers` list that the
+/// signaling server sends in `ready`. Malformed entries are skipped, not fatal.
+pub fn ice_servers_from_signaling(value: &Value) -> Vec<RTCIceServer> {
+    let Some(entries) = value.as_array() else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .take(MAX_SIGNALED_ICE_ENTRIES)
+        .filter_map(|entry| serde_json::from_value::<IceSpec>(entry.clone()).ok())
+        .filter_map(|spec| {
+            let has_credentials = !spec.username.is_empty() && !spec.credential.is_empty();
+            let urls: Vec<String> = match spec.urls {
+                IceUrls::One(url) => vec![url],
+                IceUrls::Many(urls) => urls,
+            }
+            .into_iter()
+            .filter(|url| udp_ice_url(url) && (url.starts_with("stun:") || has_credentials))
+            .take(MAX_SIGNALED_ICE_ENTRIES)
+            .collect();
+            (!urls.is_empty()).then_some(RTCIceServer {
+                urls,
+                username: spec.username,
+                credential: spec.credential,
+                credential_type: RTCIceCredentialType::Password,
+            })
+        })
+        .collect()
+}
+
+/// Local ICE settings first, then the signaling server's without duplicate
+/// URLs. Public STUN is only a last resort when neither side configured any.
+pub fn merge_rtc_configuration(
+    local: &RTCConfiguration,
+    signaled: &[RTCIceServer],
+) -> RTCConfiguration {
+    let mut rtc = local.clone();
+    let mut seen: HashSet<String> = rtc
+        .ice_servers
+        .iter()
+        .flat_map(|server| server.urls.iter().cloned())
+        .collect();
+    for server in signaled {
+        let urls: Vec<String> = server
+            .urls
+            .iter()
+            .filter(|url| seen.insert(url.to_string()))
+            .cloned()
+            .collect();
+        if !urls.is_empty() {
+            rtc.ice_servers.push(RTCIceServer {
+                urls,
+                ..server.clone()
+            });
+        }
+    }
+    if rtc.ice_servers.is_empty() {
+        rtc.ice_servers.push(RTCIceServer {
+            urls: DEFAULT_STUN_URLS.map(String::from).to_vec(),
+            ..Default::default()
+        });
+    }
+    let has_turn = rtc
+        .ice_servers
+        .iter()
+        .any(|server| server.urls.iter().any(|url| url.starts_with("turn:")));
+    if rtc.ice_transport_policy == RTCIceTransportPolicy::Relay && !has_turn {
+        tracing::warn!("FORCE_RELAY is set but neither local settings nor the signaling server provide UDP TURN; the connection will fail");
+    }
+    rtc
 }
 
 pub fn validate_path(
@@ -287,6 +367,49 @@ mod tests {
             .await
             .unwrap();
         pc.close().await.unwrap();
+    }
+
+    #[test]
+    fn keeps_only_udp_ice_servers_from_signaling() {
+        let servers = ice_servers_from_signaling(&serde_json::json!([
+            {"urls": ["stun:vps:3478"]},
+            {"urls": ["turn:vps:3478?transport=udp", "turn:vps:3478?transport=tcp", "turns:vps:443?transport=tcp"], "username": "u", "credential": "p"},
+            {"urls": "turn:no-credentials:3478"},
+            {"bogus": true},
+            "not-an-object"
+        ]));
+        let urls: Vec<&str> = servers
+            .iter()
+            .flat_map(|server| server.urls.iter().map(String::as_str))
+            .collect();
+        assert_eq!(urls, ["stun:vps:3478", "turn:vps:3478?transport=udp"]);
+        assert_eq!(servers[1].username, "u");
+        assert!(ice_servers_from_signaling(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn merges_signaled_ice_without_duplicates_and_falls_back_to_public_stun() {
+        let local = RTCConfiguration {
+            ice_servers: vec![RTCIceServer {
+                urls: vec!["stun:vps:3478".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let signaled = ice_servers_from_signaling(&serde_json::json!([
+            {"urls": ["stun:vps:3478"]},
+            {"urls": ["turn:vps:3478?transport=udp"], "username": "u", "credential": "p"}
+        ]));
+        let merged = merge_rtc_configuration(&local, &signaled);
+        let urls: Vec<&str> = merged
+            .ice_servers
+            .iter()
+            .flat_map(|server| server.urls.iter().map(String::as_str))
+            .collect();
+        assert_eq!(urls, ["stun:vps:3478", "turn:vps:3478?transport=udp"]);
+        assert_eq!(merged.ice_servers[1].credential, "p");
+        let fallback = merge_rtc_configuration(&RTCConfiguration::default(), &[]);
+        assert_eq!(fallback.ice_servers[0].urls, DEFAULT_STUN_URLS);
     }
 
     #[test]

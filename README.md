@@ -185,8 +185,10 @@ sudo ai-remote-deploy signaling
 
 部署成功后，终端将输出：
 - 浏览器一键访问 URL（含 Token Hash）
-- Web 控制中心与房间连接监控地址（`/setup`）
+- Web 控制中心与房间连接监控地址（`/setup#token=...`，需要 Token 才会显示接入信息）
 - 家里 Agent 的一键接入终端指令
+
+部署 TURN 后，脚本会把 `STUN_URL`、`TURN_URL`（UDP 与 TCP 两个地址）和 TURN 凭据写入 `/etc/ollama-link/signaling.env`。信令服务在浏览器和 Agent 通过 Token 鉴权后，随 `ready` 消息把这些 STUN/TURN 配置下发给两端，两端都不需要再手动填写。直接用 `http://<公网IP>:8080` 访问时，云安全组需放行 **8080/TCP、3478/UDP、3478/TCP、49160–49200/UDP**。
 
 4. （可选）如需部署 TURN 中继服务或使用 TLS 证书，可在向导中选择 `deploy_turn`，或编辑 `/etc/ollama-link/turn.env`。复制 `/opt/ollama-link/deploy/ollama-link-turn.service` 到 `/etc/systemd/system/` 后执行 `sudo systemctl enable --now ollama-link-turn`。
 
@@ -196,7 +198,7 @@ VPS 防火墙与云安全组需放行 **443/TCP、3478/UDP、49160–49200/UDP**
 
 ### 家庭电脑
 
-Ollama 使用默认的 `127.0.0.1:11434`。将 `deploy/home-agent.env.example` 复制为自己的配置，填入 VPS 的 WSS 地址、房间号和相同的凭据。
+Ollama 使用默认的 `127.0.0.1:11434`。将 `deploy/home-agent.env.example` 复制为自己的配置，填入 VPS 的信令地址、房间号和相同的 Token。STUN/TURN 由信令服务自动下发，通常无需配置。
 
 使用一键安装包时，`config/home-agent.env` 已创建。Windows 编辑配置并运行 Agent：
 
@@ -236,17 +238,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-home-a
 
 Linux 使用 `deploy/ollama-link-home-agent.service`，程序路径为 `/opt/ollama-link/bin/home-agent`，配置路径为 `/etc/ollama-link/home-agent.env`，服务账户同为 `ollama-link`。加载后运行 `systemctl enable --now ollama-link-home-agent`。
 
-当前 webrtc-rs 家庭 Agent 使用 **UDP TURN**；家庭配置中填写 `turn:chat.example.com:3478?transport=udp`。公司浏览器可使用 **`turns:chat.example.com:443?transport=tcp`**。浏览器到 VPS 使用 TLS/TCP、VPS 到家庭 Agent 使用 UDP，可以满足公司侧阻断 UDP 的场景。TURN/TLS 不是 HTTP 流量；仅允许 HTTP 代理或进行严格协议过滤的网络仍需实地验证。
+当前 webrtc-rs 家庭 Agent 只使用信令下发配置中的 STUN 与 **UDP TURN** 地址，TCP/TLS 地址留给浏览器。如需覆盖，可在家庭配置中填写 `turn:chat.example.com:3478?transport=udp`。公司浏览器可使用 **`turns:chat.example.com:443?transport=tcp`**。浏览器到 VPS 使用 TLS/TCP、VPS 到家庭 Agent 使用 UDP，可以满足公司侧阻断 UDP 的场景。TURN/TLS 不是 HTTP 流量；仅允许 HTTP 代理或进行严格协议过滤的网络仍需实地验证。
 
 ### 公司浏览器
 
-打开 `https://chat.example.com`，填写房间号、Token、TURN 地址及凭据，点击连接后选择模型聊天。页面支持流式回复、停止生成、清空历史、模型列表，以及连接中断后的自动重连。Token 不写入浏览器持久存储。
+打开 `https://chat.example.com`，填写房间号和 Token，点击连接后选择模型聊天。TURN 地址及凭据由信令服务自动下发，也可以在连接设置中额外填写。页面支持流式回复、停止生成、清空历史、模型列表，以及连接中断后的自动重连。Token 不写入浏览器持久存储。
 
 ## 配置与接口
 
 Agent 的 `ALLOWED_PATHS` 默认精确允许 `GET /api/tags`、`POST /api/chat` 和 `POST /api/generate`。路径穿越、前缀匹配、替换请求主机和 HTTP 重定向不会绕过白名单。`/api/version` 可显式加入并以 GET 访问。不要开放模型删除、下载等接口作为聊天所需权限。
 
-`ICE_SERVERS_JSON` 接受浏览器形式的 ICE 配置，`urls` 可为字符串或数组。Agent 也支持 `STUN_URL`、`TURN_URL`、`TURN_USER`、`TURN_PASS` 和 `FORCE_RELAY`。`REQUEST_TIMEOUT_SECS` 默认 600 秒。
+信令服务的 `STUN_URL`、`TURN_URL`（可用逗号分隔多个地址）、`TURN_USER` 和 `TURN_PASS` 会随鉴权后的 `ready` 消息下发给浏览器和 Agent，并与两端的本地设置合并去重；两端都没有任何配置时才使用公共 STUN。`/api/setup` 只有携带 `Authorization: Bearer <Token>` 时才返回 Token 和接入指令，且从不返回 TURN 密码。
+
+Agent 的 `ICE_SERVERS_JSON` 接受浏览器形式的 ICE 配置，`urls` 可为字符串或数组。Agent 也支持 `STUN_URL`、`TURN_URL`、`TURN_USER`、`TURN_PASS` 和 `FORCE_RELAY`。`REQUEST_TIMEOUT_SECS` 默认 600 秒。
 
 客户端 `OllamaRemoteClient.fetch` 是绑定好的 Fetch 兼容方法，支持 `Request`、`Response`、`ReadableStream` 和 `AbortSignal`，可以注入官方 Ollama JS SDK：
 

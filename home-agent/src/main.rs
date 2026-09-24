@@ -20,7 +20,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use webrtc::{
     api::APIBuilder,
-    ice_transport::ice_candidate::RTCIceCandidateInit,
+    ice_transport::{ice_candidate::RTCIceCandidateInit, ice_server::RTCIceServer},
     peer_connection::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription, RTCPeerConnection,
@@ -44,11 +44,12 @@ async fn new_peer(
     config: Arc<Config>,
     session: String,
     outgoing: mpsc::Sender<Message>,
+    signaled_ice: &[RTCIceServer],
 ) -> Result<Peer> {
     let pc = Arc::new(
         APIBuilder::new()
             .build()
-            .new_peer_connection(config.rtc.clone())
+            .new_peer_connection(config.rtc_configuration(signaled_ice))
             .await?,
     );
     let cancel = CancellationToken::new();
@@ -116,6 +117,8 @@ async fn signaling_session(config: Arc<Config>, shutdown: CancellationToken) -> 
     let (outgoing, mut outbound) = mpsc::channel(64);
     let mut peer: Option<Peer> = None;
     let mut early = Vec::<(String, RTCIceCandidateInit)>::new();
+    // STUN/TURN pushed by the signaling server after it authenticated us.
+    let mut signaled_ice = Vec::<RTCIceServer>::new();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
     let mut last_message = Instant::now();
     tracing::info!("connected to signaling server as home");
@@ -154,10 +157,16 @@ async fn signaling_session(config: Arc<Config>, shutdown: CancellationToken) -> 
                     let session = value["session"].as_str().unwrap_or_default().to_owned();
                     match value["type"].as_str() {
                         Some("ready") if value["protocol"] != 1 => return Err(anyhow!("unsupported signaling protocol")),
+                        Some("ready") => {
+                            signaled_ice = config::ice_servers_from_signaling(&value["iceServers"]);
+                            let urls: Vec<&str> = signaled_ice.iter().flat_map(|server| server.urls.iter().map(String::as_str)).collect();
+                            if urls.is_empty() { tracing::info!("signaling server sent no ICE servers; using local settings"); }
+                            else { tracing::info!("ICE servers from signaling: {}", urls.join(", ")); }
+                        }
                         Some("offer") => {
                             if session.is_empty() || session.len() > 64 { continue; }
                             if let Some(previous) = peer.take() { previous.close().await; }
-                            let new = new_peer(config.clone(), session.clone(), outgoing.clone()).await?;
+                            let new = new_peer(config.clone(), session.clone(), outgoing.clone(), &signaled_ice).await?;
                             let negotiation: Result<()> = async {
                                 let sdp = value["sdp"].as_str().ok_or_else(|| anyhow!("missing offer"))?;
                                 new.pc.set_remote_description(RTCSessionDescription::offer(sdp.to_owned())?).await?;

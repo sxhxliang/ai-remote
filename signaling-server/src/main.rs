@@ -1,9 +1,13 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        Query, Request, State,
     },
-    http::{HeaderMap, StatusCode},
+    http::{
+        header::{AUTHORIZATION, CACHE_CONTROL},
+        HeaderMap, HeaderValue, StatusCode,
+    },
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -40,8 +44,8 @@ struct AppState {
     public_host: Arc<String>,
     stun_url: Arc<Option<String>>,
     turn_url: Arc<Option<String>>,
-    turn_user: Arc<Option<String>>,
-    turn_pass: Arc<Option<String>>,
+    /// Browser-style ICE servers sent to both peers in the authenticated `ready` message.
+    ice_servers: Arc<Value>,
 }
 
 #[derive(Clone)]
@@ -104,6 +108,99 @@ fn token_matches(actual: &str, expected: &str) -> bool {
         .zip(expected.bytes())
         .fold(0u8, |diff, (a, b)| diff | (a ^ b))
         == 0
+}
+
+fn split_urls(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Builds the ICE servers that both peers receive after authenticating, so the
+/// browser and the home Agent use the VPS STUN/TURN without local settings.
+/// Only schemes browsers accept are allowed, because one invalid URL makes
+/// `new RTCPeerConnection` throw.
+fn build_ice_servers(
+    stun: Option<&str>,
+    turn: Option<&str>,
+    user: Option<&str>,
+    pass: Option<&str>,
+) -> anyhow::Result<Value> {
+    let mut servers = Vec::new();
+    let stun_urls = split_urls(stun);
+    anyhow::ensure!(
+        stun_urls.iter().all(|url| url.starts_with("stun:")),
+        "STUN_URL entries must start with stun:"
+    );
+    if !stun_urls.is_empty() {
+        servers.push(json!({ "urls": stun_urls }));
+    }
+    let turn_urls = split_urls(turn);
+    anyhow::ensure!(
+        turn_urls
+            .iter()
+            .all(|url| url.starts_with("turn:") || url.starts_with("turns:")),
+        "TURN_URL entries must start with turn: or turns:"
+    );
+    if !turn_urls.is_empty() {
+        let (Some(user), Some(pass)) = (user, pass) else {
+            anyhow::bail!("TURN_URL requires TURN_USER and TURN_PASS");
+        };
+        servers.push(json!({ "urls": turn_urls, "username": user, "credential": pass }));
+    }
+    Ok(Value::Array(servers))
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+}
+
+/// Returns the room and token the caller proved it knows via `Authorization: Bearer`.
+fn setup_credentials(state: &AppState, headers: &HeaderMap) -> Option<(String, String)> {
+    let presented = bearer_token(headers)?;
+    if state.room_tokens.is_empty() {
+        token_matches(presented, &state.token)
+            .then(|| (state.default_room.to_string(), state.token.to_string()))
+    } else {
+        state
+            .room_tokens
+            .iter()
+            .find(|(_, token)| token_matches(presented, token))
+            .map(|(room, token)| (room.clone(), token.clone()))
+    }
+}
+
+/// The entry HTML must be revalidated so a redeploy takes effect at once;
+/// content-hashed assets never change; API and setup responses may carry secrets.
+fn cache_policy(path: &str, status: StatusCode) -> Option<&'static str> {
+    if path == "/ws" {
+        None
+    } else if path.starts_with("/api/") || path == "/setup" || path == "/config" {
+        Some("no-store")
+    } else if path.starts_with("/assets/") && status.is_success() {
+        Some("public, max-age=31536000, immutable")
+    } else {
+        Some("no-cache")
+    }
+}
+
+async fn cache_headers(request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_owned();
+    let mut response = next.run(request).await;
+    if let Some(policy) = cache_policy(&path, response.status()) {
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static(policy));
+    }
+    response
 }
 
 fn cleanup(state: &AppState, room_name: &str, role: Role, id: Uuid) {
@@ -215,7 +312,12 @@ async fn handle_socket(
         }
         other.is_some()
     };
-    let ready = json!({"type": "ready", "protocol": 1, "peerOnline": online});
+    let ready = json!({
+        "type": "ready",
+        "protocol": 1,
+        "peerOnline": online,
+        "iceServers": &*state.ice_servers,
+    });
     if send(&mut writer, Message::Text(ready.to_string()))
         .await
         .is_err()
@@ -285,20 +387,26 @@ struct RoomOnlineInfo {
     has_browser: bool,
 }
 
+/// Public fields are safe to show anyone; the rest require a valid Bearer token.
+/// TURN credentials are never returned here: peers receive them in `ready`.
 #[derive(Serialize)]
 struct SetupConfigResponse {
+    authenticated: bool,
     room: String,
-    token: String,
     signaling_ws: String,
-    web_url: String,
     setup_url: String,
     stun_url: Option<String>,
     turn_url: Option<String>,
-    turn_user: Option<String>,
-    turn_pass: Option<String>,
-    agent_cmd_sh: String,
-    agent_cmd_ps: String,
-    active_rooms: Vec<RoomOnlineInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_cmd_sh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_cmd_ps: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_rooms: Option<Vec<RoomOnlineInfo>>,
 }
 
 fn resolve_host_info(
@@ -332,48 +440,48 @@ async fn api_setup_handler(
     State(state): State<AppState>,
 ) -> Json<SetupConfigResponse> {
     let (host, http_proto, ws_proto) = resolve_host_info(&headers, &state.public_host);
-    let room = state.default_room.as_str();
-    let token = if let Some(t) = state.room_tokens.get(room) {
-        t.as_str()
-    } else {
-        state.token.as_str()
-    };
     let signaling_ws = format!("{ws_proto}://{host}/ws");
-    let web_url = format!("{http_proto}://{host}/#room={room}&token={token}");
-    let setup_url = format!("{http_proto}://{host}/setup");
-    let agent_cmd_sh = format!(
+    let mut response = SetupConfigResponse {
+        authenticated: false,
+        room: state.default_room.to_string(),
+        signaling_ws: signaling_ws.clone(),
+        setup_url: format!("{http_proto}://{host}/setup"),
+        stun_url: (*state.stun_url).clone(),
+        turn_url: (*state.turn_url).clone(),
+        token: None,
+        web_url: None,
+        agent_cmd_sh: None,
+        agent_cmd_ps: None,
+        active_rooms: None,
+    };
+    let Some((room, token)) = setup_credentials(&state, &headers) else {
+        return Json(response);
+    };
+    response.authenticated = true;
+    response.web_url = Some(format!("{http_proto}://{host}/#room={room}&token={token}"));
+    response.agent_cmd_sh = Some(format!(
         "SIGNALING_URL=\"{signaling_ws}\" ROOM_ID=\"{room}\" SIGNALING_TOKEN=\"{token}\" ai-remote-agent"
-    );
-    let agent_cmd_ps = format!(
+    ));
+    response.agent_cmd_ps = Some(format!(
         "$env:SIGNALING_URL=\"{signaling_ws}\"; $env:ROOM_ID=\"{room}\"; $env:SIGNALING_TOKEN=\"{token}\"; ai-remote-agent"
-    );
-
-    let active_rooms = {
+    ));
+    // A room-specific token only reveals its own room.
+    let own_room_only = !state.room_tokens.is_empty();
+    response.active_rooms = Some({
         let rooms = state.rooms.lock().unwrap();
         rooms
             .iter()
+            .filter(|(name, _)| !own_room_only || **name == room)
             .map(|(name, r)| RoomOnlineInfo {
                 name: name.clone(),
                 has_home: r.home.as_ref().is_some_and(|p| p.active),
                 has_browser: r.browser.as_ref().is_some_and(|p| p.active),
             })
             .collect()
-    };
-
-    Json(SetupConfigResponse {
-        room: room.to_string(),
-        token: token.to_string(),
-        signaling_ws,
-        web_url,
-        setup_url,
-        stun_url: (*state.stun_url).clone(),
-        turn_url: (*state.turn_url).clone(),
-        turn_user: (*state.turn_user).clone(),
-        turn_pass: (*state.turn_pass).clone(),
-        agent_cmd_sh,
-        agent_cmd_ps,
-        active_rooms,
-    })
+    });
+    response.room = room;
+    response.token = Some(token);
+    Json(response)
 }
 
 async fn setup_page_handler() -> Html<&'static str> {
@@ -578,7 +686,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
       align-items: center;
       margin-bottom: 12px;
     }
-    input[type="text"] {
+    input[type="text"], input[type="password"] {
       flex: 1;
       padding: 10px 14px;
       border: 1px solid var(--border);
@@ -588,7 +696,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
       background: #fafbfa;
       color: var(--text);
     }
-    input[type="text"]:focus {
+    input[type="text"]:focus, input[type="password"]:focus {
       outline: 2px solid var(--primary);
       background: #fff;
     }
@@ -718,6 +826,17 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
       </div>
     </header>
 
+    <div class="card" id="login-card" hidden style="border-left: 4px solid #b54708;">
+      <h2 class="card-title">🔒 请先验证访问 Token</h2>
+      <p class="card-desc">接入信息包含访问凭据，只对持有 Token 的人显示。Token 见部署输出，或 /etc/ollama-link/signaling.env 中的 SIGNALING_TOKEN。也可以直接打开 /setup#token=你的Token。</p>
+      <div class="input-row">
+        <input type="password" id="login-token" placeholder="SIGNALING_TOKEN" autocomplete="off" onkeydown="if (event.key === 'Enter') login()">
+        <button class="btn" onclick="login()">验证</button>
+      </div>
+      <p class="card-desc" id="login-error" style="color: #b42318; margin: 0;"></p>
+    </div>
+
+    <div id="secure-content" hidden>
     <div class="card" style="border-left: 4px solid var(--primary);">
       <div class="card-header">
         <h2 class="card-title">🌐 公司电脑浏览器快捷访问</h2>
@@ -744,19 +863,16 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2 class="card-title">🔑 房间与密钥快速调整</h2>
-      <p class="card-desc">你可以自定义房间号或生成新的随机安全 Token，上方对应的接入指令将即时同步更新：</p>
+      <h2 class="card-title">🔑 房间与 Token</h2>
+      <p class="card-desc">房间号可以自定义，浏览器和 Agent 填写相同的房间号即可，上方链接与指令会同步更新。Token 必须与服务器配置一致，修改请编辑服务器上的 SIGNALING_TOKEN 并重启信令服务。STUN/TURN 由信令服务在连接时自动下发，两端都无需单独配置。</p>
       <div class="grid-2">
         <div>
           <label for="room-input">房间号 (Room ID)</label>
           <input type="text" id="room-input" value="default" oninput="updateAll()">
         </div>
         <div>
-          <label for="token-input">安全 Token (至少 16 位)</label>
-          <div style="display: flex; gap: 8px;">
-            <input type="text" id="token-input" oninput="updateAll()">
-            <button class="btn secondary" style="padding: 0 12px;" title="重新随机生成 Token" onclick="generateNewToken()">🎲 生成</button>
-          </div>
+          <label for="token-input">访问 Token</label>
+          <input type="text" id="token-input" readonly>
         </div>
       </div>
     </div>
@@ -768,6 +884,7 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
         <div style="color: var(--muted); font-size: 13.5px;">正在获取在线状态...</div>
       </div>
     </div>
+    </div>
   </div>
 
   <div id="toast" class="toast">已复制！</div>
@@ -775,16 +892,13 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
   <script>
     let currentConfig = null;
     let currentTab = 'sh';
+    // Kept in the URL fragment only: fragments are never sent to the server.
+    let authToken = new URLSearchParams(location.hash.slice(1)).get('token') || '';
 
-    function randomHex(length) {
-      const bytes = new Uint8Array(length / 2);
-      window.crypto.getRandomValues(bytes);
-      return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    }
-
-    function generateNewToken() {
-      document.getElementById('token-input').value = randomHex(32);
-      updateAll();
+    function login() {
+      authToken = document.getElementById('login-token').value.trim();
+      history.replaceState(null, '', authToken ? '#token=' + encodeURIComponent(authToken) : location.pathname);
+      refreshStatus();
     }
 
     function switchTab(tab) {
@@ -846,10 +960,19 @@ const SETUP_HTML: &str = r#"<!DOCTYPE html>
 
     async function refreshStatus() {
       try {
-        const res = await fetch('/api/setup');
+        const res = await fetch('/api/setup', {
+          cache: 'no-store',
+          headers: authToken ? { Authorization: 'Bearer ' + authToken } : {},
+        });
         if (!res.ok) return;
         const data = await res.json();
         currentConfig = data;
+        document.getElementById('login-card').hidden = data.authenticated;
+        document.getElementById('secure-content').hidden = !data.authenticated;
+        if (!data.authenticated) {
+          document.getElementById('login-error').textContent = authToken ? 'Token 无效，请检查后重试。' : '';
+          return;
+        }
 
         if (!document.getElementById('token-input').value) {
           document.getElementById('room-input').value = data.room || 'default';
@@ -921,6 +1044,26 @@ async fn main() -> anyhow::Result<()> {
     let turn_url = env::var("TURN_URL").ok().filter(|s| !s.is_empty());
     let turn_user = env::var("TURN_USER").ok().filter(|s| !s.is_empty());
     let turn_pass = env::var("TURN_PASS").ok().filter(|s| !s.is_empty());
+    let ice_servers = build_ice_servers(
+        stun_url.as_deref(),
+        turn_url.as_deref(),
+        turn_user.as_deref(),
+        turn_pass.as_deref(),
+    )?;
+    let ice_urls: Vec<&str> = ice_servers
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|server| server["urls"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .collect();
+    if ice_urls.is_empty() {
+        tracing::warn!(
+            "STUN_URL/TURN_URL are not set: peers only get their local ICE settings and public STUN, which usually fails behind NAT"
+        );
+    } else {
+        tracing::info!("ICE servers sent to peers: {}", ice_urls.join(", "));
+    }
 
     let shutdown = CancellationToken::new();
     let state = AppState {
@@ -932,8 +1075,7 @@ async fn main() -> anyhow::Result<()> {
         public_host: Arc::new(public_host),
         stun_url: Arc::new(stun_url),
         turn_url: Arc::new(turn_url),
-        turn_user: Arc::new(turn_user),
-        turn_pass: Arc::new(turn_pass),
+        ice_servers: Arc::new(ice_servers),
     };
 
     let app = Router::new()
@@ -958,6 +1100,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("no frontend directory found; falling back to setup prompt");
         app.fallback(get(fallback_page_handler))
     };
+    let app = app.layer(middleware::from_fn(cache_headers));
 
     let bind = env::var("SIGNALING_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -979,7 +1122,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let web_url =
         format!("{http_proto}://{display_host}/#room={default_room}&token={token_preview}");
-    let setup_url = format!("{http_proto}://{display_host}/setup");
+    let setup_url = format!("{http_proto}://{display_host}/setup#token={token_preview}");
     let signaling_ws = format!("{ws_proto}://{display_host}/ws");
     let agent_sh = format!(
         "SIGNALING_URL=\"{signaling_ws}\" ROOM_ID=\"{default_room}\" SIGNALING_TOKEN=\"{token_preview}\" ai-remote-agent"
@@ -1050,20 +1193,93 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn old_cleanup_does_not_remove_a_replacement() {
-        let state = AppState {
-            token: Arc::new("test".into()),
+    fn test_state(token: &str, room_tokens: HashMap<String, String>) -> AppState {
+        AppState {
+            token: Arc::new(token.into()),
             default_room: Arc::new("default".into()),
-            room_tokens: Arc::new(HashMap::new()),
+            room_tokens: Arc::new(room_tokens),
             rooms: Arc::new(Mutex::new(HashMap::new())),
             shutdown: CancellationToken::new(),
             public_host: Arc::new("".into()),
             stun_url: Arc::new(None),
             turn_url: Arc::new(None),
-            turn_user: Arc::new(None),
-            turn_pass: Arc::new(None),
-        };
+            ice_servers: Arc::new(json!([])),
+        }
+    }
+
+    fn bearer(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(value).unwrap());
+        headers
+    }
+
+    #[test]
+    fn builds_browser_style_ice_servers_for_both_peers() {
+        let servers = build_ice_servers(
+            Some("stun:1.2.3.4:3478"),
+            Some("turn:1.2.3.4:3478?transport=udp, turn:1.2.3.4:3478?transport=tcp"),
+            Some("user"),
+            Some("pass"),
+        )
+        .unwrap();
+        assert_eq!(
+            servers,
+            json!([
+                {"urls": ["stun:1.2.3.4:3478"]},
+                {"urls": ["turn:1.2.3.4:3478?transport=udp", "turn:1.2.3.4:3478?transport=tcp"], "username": "user", "credential": "pass"}
+            ])
+        );
+        assert_eq!(
+            build_ice_servers(None, None, None, None).unwrap(),
+            json!([])
+        );
+        assert!(build_ice_servers(None, Some("turn:1.2.3.4:3478"), None, None).is_err());
+        assert!(build_ice_servers(Some("http://1.2.3.4"), None, None, None).is_err());
+        assert!(build_ice_servers(None, Some("stun:1.2.3.4"), Some("u"), Some("p")).is_err());
+    }
+
+    #[test]
+    fn setup_details_require_the_room_token() {
+        let state = test_state("0123456789abcdef", HashMap::new());
+        assert!(setup_credentials(&state, &HeaderMap::new()).is_none());
+        assert!(setup_credentials(&state, &bearer("Bearer wrong-token-000000")).is_none());
+        assert!(setup_credentials(&state, &bearer("0123456789abcdef")).is_none());
+        assert_eq!(
+            setup_credentials(&state, &bearer("Bearer 0123456789abcdef")),
+            Some(("default".into(), "0123456789abcdef".into()))
+        );
+        let rooms = HashMap::from([("r1".to_string(), "room-one-secret-0001".to_string())]);
+        let state = test_state("", rooms);
+        assert_eq!(
+            setup_credentials(&state, &bearer("Bearer room-one-secret-0001")),
+            Some(("r1".into(), "room-one-secret-0001".into()))
+        );
+        assert!(setup_credentials(&state, &bearer("Bearer ")).is_none());
+    }
+
+    #[test]
+    fn entry_html_is_revalidated_and_hashed_assets_are_immutable() {
+        assert_eq!(cache_policy("/", StatusCode::OK), Some("no-cache"));
+        assert_eq!(
+            cache_policy("/index.html", StatusCode::OK),
+            Some("no-cache")
+        );
+        assert_eq!(
+            cache_policy("/assets/index-abc.js", StatusCode::OK),
+            Some("public, max-age=31536000, immutable")
+        );
+        assert_eq!(
+            cache_policy("/assets/index-old.js", StatusCode::NOT_FOUND),
+            Some("no-cache")
+        );
+        assert_eq!(cache_policy("/api/setup", StatusCode::OK), Some("no-store"));
+        assert_eq!(cache_policy("/setup", StatusCode::OK), Some("no-store"));
+        assert_eq!(cache_policy("/ws", StatusCode::SWITCHING_PROTOCOLS), None);
+    }
+
+    #[test]
+    fn old_cleanup_does_not_remove_a_replacement() {
+        let state = test_state("test", HashMap::new());
         let (tx, _rx) = mpsc::channel(1);
         let current = Uuid::new_v4();
         state.rooms.lock().unwrap().insert(
