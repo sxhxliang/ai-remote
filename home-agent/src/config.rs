@@ -51,6 +51,8 @@ pub struct Config {
     pub signaling: Url,
     pub rtc: RTCConfiguration,
     pub base: Url,
+    pub openai_base: Url,
+    pub openai_api_key: Option<String>,
     pub allowed: HashSet<String>,
     pub timeout: Duration,
     pub http: reqwest::Client,
@@ -149,8 +151,25 @@ impl Config {
                 && base.password().is_none(),
             "OLLAMA_BASE must be an origin without path or credentials"
         );
+        let openai_base =
+            Url::parse(&env::var("OPENAI_BASE").unwrap_or_else(|_| base.as_str().to_owned()))?;
+        ensure!(
+            matches!(openai_base.scheme(), "http" | "https")
+                && openai_base.host_str().is_some()
+                && openai_base.path() == "/"
+                && openai_base.query().is_none()
+                && openai_base.fragment().is_none()
+                && openai_base.username().is_empty()
+                && openai_base.password().is_none(),
+            "OPENAI_BASE must be an origin without path or credentials"
+        );
+        let openai_api_key = env::var("OPENAI_API_KEY")
+            .ok()
+            .filter(|key| !key.is_empty());
         let allowed: HashSet<String> = env::var("ALLOWED_PATHS")
-            .unwrap_or_else(|_| "/api/generate,/api/chat,/api/tags".into())
+            .unwrap_or_else(|_| {
+                "/api/generate,/api/chat,/api/tags,/v1/models,/v1/chat/completions".into()
+            })
             .split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -158,10 +177,12 @@ impl Config {
             .collect();
         ensure!(
             !allowed.is_empty()
-                && allowed.iter().all(|p| p.starts_with("/api/")
-                    && !p.contains(['?', '#', '%', '\\'])
-                    && !p.contains("..")),
-            "ALLOWED_PATHS must contain exact /api/ paths"
+                && allowed
+                    .iter()
+                    .all(|p| (p.starts_with("/api/") || p.starts_with("/v1/"))
+                        && !p.contains(['?', '#', '%', '\\'])
+                        && !p.contains("..")),
+            "ALLOWED_PATHS must contain exact /api/ or /v1/ paths"
         );
         let mut ice_servers =
             parse_ice_servers(&env::var("ICE_SERVERS_JSON").unwrap_or_else(|_| "[]".into()))?;
@@ -226,6 +247,8 @@ impl Config {
             signaling,
             rtc,
             base,
+            openai_base,
+            openai_api_key,
             allowed,
             timeout: Duration::from_secs(timeout_secs),
             http,
@@ -233,7 +256,12 @@ impl Config {
     }
 
     pub fn request_url(&self, method: &str, path: &str) -> Result<Url> {
-        validate_path(&self.base, &self.allowed, method, path)
+        let base = if path.starts_with("/v1/") {
+            &self.openai_base
+        } else {
+            &self.base
+        };
+        validate_path(base, &self.allowed, method, path)
     }
 
     pub fn rtc_configuration(&self, signaled: &[RTCIceServer]) -> RTCConfiguration {
@@ -338,7 +366,7 @@ pub fn validate_path(
     ensure!(allowed.contains(raw_path), "path not allowed");
     ensure!(
         match raw_path {
-            "/api/tags" | "/api/version" => method == "GET",
+            "/api/tags" | "/api/version" | "/v1/models" => method == "GET",
             _ => method == "POST",
         },
         "method not allowed"
@@ -433,5 +461,25 @@ mod tests {
         assert!(validate_path(&base, &allowed, "DELETE", "/api/chat").is_err());
         assert!(validate_path(&base, &allowed, "GET", "/api/tags?x=1").is_ok());
         assert!(validate_path(&base, &allowed, "POST", "/api/chat").is_ok());
+    }
+
+    #[test]
+    fn allows_only_openai_model_list_and_chat_methods() {
+        let base = Url::parse("http://127.0.0.1:11434").unwrap();
+        let allowed = HashSet::from(["/v1/models".into(), "/v1/chat/completions".into()]);
+        assert!(validate_path(&base, &allowed, "GET", "/v1/models").is_ok());
+        assert!(validate_path(&base, &allowed, "POST", "/v1/chat/completions").is_ok());
+        for (method, path) in [
+            ("POST", "/v1/models"),
+            ("GET", "/v1/chat/completions"),
+            ("GET", "/v1/models/other"),
+            ("GET", "/v1/models/%2e%2e/chat/completions"),
+            ("DELETE", "/v1/models/gemma3:1b"),
+        ] {
+            assert!(
+                validate_path(&base, &allowed, method, path).is_err(),
+                "{method} {path}"
+            );
+        }
     }
 }

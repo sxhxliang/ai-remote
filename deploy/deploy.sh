@@ -263,7 +263,7 @@ SIGNALING_URL=${ws_url}
 ROOM_ID=${room}
 SIGNALING_TOKEN=${token}
 OLLAMA_BASE=http://127.0.0.1:11434
-ALLOWED_PATHS=/api/chat,/api/generate,/api/tags
+ALLOWED_PATHS=/api/chat,/api/generate,/api/tags,/v1/models,/v1/chat/completions
 REQUEST_TIMEOUT_SECS=600
 FORCE_RELAY=false
 EOF

@@ -305,6 +305,11 @@ impl Rpc {
                 builder = builder.header(name, value);
             }
         }
+        if request.path.starts_with("/v1/") {
+            if let Some(key) = &self.config.openai_api_key {
+                builder = builder.bearer_auth(key);
+            }
+        }
         if let Some(body) = &request.body {
             builder = builder.body(body.clone());
         }

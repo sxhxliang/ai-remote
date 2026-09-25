@@ -14,7 +14,9 @@ export async function prepareRelease({ directory = resolve(releaseRoot, '.artifa
   }
   await writeFile(resolve(directory, 'SHA256SUMS'), files.map(({ archive, digest }) => digest + '  ' + basename(archive)).join('\n') + '\n');
   const url = `https://github.com/${repository}/releases/download/${version}`;
-  const notes = `AI Remote ${version}：通过浏览器的 WebRTC DataChannel 访问家里的 Ollama。
+  const notes = `AI Remote ${version}：通过浏览器的 WebRTC DataChannel 访问家里的模型服务。
+
+本版新增 OpenAI 兼容聊天接口：自动读取 /v1/models，使用流式 /v1/chat/completions 聊天。可直接使用 Ollama 已安装的模型，也可在家庭 Agent 配置 OPENAI_BASE 和 OPENAI_API_KEY 连接其他兼容服务。Ollama 原生接口继续可用。
 
 提供 Linux、macOS、Windows 的 x64 / ARM64 安装包，包含家庭 Agent、信令服务、TURN 服务、Web UI 和配置模板。使用预编译包无需 Rust 或 Node.js。
 

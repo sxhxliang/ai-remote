@@ -9,7 +9,9 @@ import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startLocalStack, binary } from './local-stack.mjs';
 
-const stack = await startLocalStack({ build: !process.argv.includes('--no-build') });
+const mockPortOption = process.argv.indexOf('--mock-port');
+const mockPort = mockPortOption >= 0 ? Number(process.argv[mockPortOption + 1]) : 11434;
+const stack = await startLocalStack({ build: !process.argv.includes('--no-build'), mockPort });
 let checks = 0;
 const pass = (name) => { checks++; console.log('PASS ' + name); };
 

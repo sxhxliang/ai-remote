@@ -79,8 +79,8 @@ export async function startLocalStack({ build = true, mockPort = 11434 } = {}) {
   const env = {
     ...process.env,
     SIGNALING_TOKEN: token, ROOM_ID: 'local-mock', SIGNALING_URL: 'ws://127.0.0.1:8080/ws',
-    SIGNALING_BIND: '127.0.0.1:8080', OLLAMA_BASE: 'http://127.0.0.1:' + mockPort, MOCK_OLLAMA_PORT: String(mockPort), REQUEST_TIMEOUT_SECS: '600',
-    ALLOWED_PATHS: '/api/generate,/api/chat,/api/tags', ICE_SERVERS_JSON: '[]',
+    SIGNALING_BIND: '127.0.0.1:8080', OLLAMA_BASE: 'http://127.0.0.1:' + mockPort, OPENAI_BASE: 'http://127.0.0.1:' + mockPort, MOCK_OLLAMA_PORT: String(mockPort), REQUEST_TIMEOUT_SECS: '600',
+    ALLOWED_PATHS: '/api/generate,/api/chat,/api/tags,/v1/models,/v1/chat/completions', ICE_SERVERS_JSON: '[]',
     STUN_URL: 'stun:127.0.0.1:3478', TURN_URL: 'turn:127.0.0.1:3478?transport=udp',
     TURN_USER: 'local-test', TURN_PASS: turnPassword, PUBLIC_IP: '127.0.0.1',
     TURN_UDP_BIND: '127.0.0.1:3478', TURN_TCP_BIND: '127.0.0.1:3478', TURN_TLS_BIND: '127.0.0.1:18443',
@@ -90,6 +90,7 @@ export async function startLocalStack({ build = true, mockPort = 11434 } = {}) {
     FRONTEND_DIR: resolve(root, 'frontend/dist'),
   };
   delete env.ROOM_TOKENS_JSON;
+  delete env.OPENAI_API_KEY;
   delete env.FORCE_RELAY;
   delete env.PROBE_TURN_URL;
   const children = new Set();

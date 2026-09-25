@@ -54,11 +54,15 @@ export function createMockOllamaServer() {
       });
       return;
     }
+    if (path === '/v1/models' && request.method === 'GET') {
+      json(response, 200, { object: 'list', data: models.map((id) => ({ id, object: 'model' })) });
+      return;
+    }
     if (path === '/api/delete' && request.method === 'DELETE') {
       json(response, 200, { mock: true, deleted: false });
       return;
     }
-    if (!['/api/chat', '/api/generate'].includes(path) || request.method !== 'POST') {
+    if (!['/api/chat', '/api/generate', '/v1/chat/completions'].includes(path) || request.method !== 'POST') {
       json(response, 404, { error: 'Mock Ollama: endpoint not found' });
       return;
     }
@@ -79,6 +83,24 @@ export function createMockOllamaServer() {
         return;
       }
       const parts = ['这是本地 Mock Ollama。', '中文流式响应正常，', '不会调用真实模型。'];
+      if (path === '/v1/chat/completions') {
+        const completion = (content, finishReason = null) => ({
+          id: 'chatcmpl-mock', object: 'chat.completion.chunk', model: body.model,
+          choices: [{ index: 0, delta: { content }, finish_reason: finishReason }],
+        });
+        if (body.stream === false) {
+          json(response, 200, { id: 'chatcmpl-mock', object: 'chat.completion', model: body.model, choices: [{ index: 0, message: { role: 'assistant', content: parts.join('') }, finish_reason: 'stop' }] });
+          return;
+        }
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        for (const part of parts) {
+          if (response.destroyed) return;
+          response.write('data: ' + JSON.stringify(completion(part)) + '\n\n');
+          await delay(150);
+        }
+        if (!response.destroyed) response.end('data: ' + JSON.stringify(completion('', 'stop')) + '\n\ndata: [DONE]\n\n');
+        return;
+      }
       const record = (content, done = false) => ({
         model: body.model,
         created_at: new Date().toISOString(),

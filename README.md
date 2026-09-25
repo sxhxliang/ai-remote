@@ -40,12 +40,12 @@ irm https://github.com/sxhxliang/ai-remote/releases/latest/download/install.ps1 
 指定版本或目录：
 
 ```sh
-curl -fsSL https://github.com/sxhxliang/ai-remote/releases/latest/download/install.sh | AI_REMOTE_VERSION=v0.2.1 sh
+curl -fsSL https://github.com/sxhxliang/ai-remote/releases/latest/download/install.sh | AI_REMOTE_VERSION=v0.2.3 sh
 curl -fsSL https://github.com/sxhxliang/ai-remote/releases/latest/download/install.sh | AI_REMOTE_INSTALL_DIR="$HOME/apps/ai-remote" AI_REMOTE_BIN_DIR="$HOME/bin" sh
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/sxhxliang/ai-remote/releases/latest/download/install.ps1))) -Version v0.2.1 -InstallDir 'D:\Apps\ai-remote'
+& ([scriptblock]::Create((irm https://github.com/sxhxliang/ai-remote/releases/latest/download/install.ps1))) -Version v0.2.3 -InstallDir 'D:\Apps\ai-remote'
 ```
 
 Windows 可加 `-NoPath` 禁用 PATH 修改。两个脚本均支持 `AI_REMOTE_REPO=owner/repo`，便于使用自己的 fork。也可在 Release 页面手动下载 ZIP / tar.gz 和对应 `.sha256` 文件；`SHA256SUMS` 同时覆盖安装包和安装脚本。
@@ -119,7 +119,7 @@ node scripts/stop-local.mjs
 node scripts/local-test.mjs --keep
 ```
 
-`dev.mjs` 默认将 Mock 放在 11434；可加 `--mock-port 11435`。`local-test.mjs` 使用 11434，并独立启动、测试和回收整套服务，运行前需要先停止已有测试实例。`--keep` 在测试成功后保留服务；`--no-build` 复用已有构建。
+`dev.mjs` 和 `local-test.mjs` 默认将 Mock 放在 11434；都可加 `--mock-port 11435`，避免与真实 Ollama 冲突。`local-test.mjs` 独立启动、测试和回收整套服务，运行前需要先停止已有测试实例。`--keep` 在测试成功后保留服务；`--no-build` 复用已有构建。
 
 对每个 Rust crate 执行：
 
@@ -242,11 +242,17 @@ Linux 使用 `deploy/ollama-link-home-agent.service`，程序路径为 `/opt/oll
 
 ### 公司浏览器
 
-打开 `https://chat.example.com`，填写房间号和 Token，点击连接后选择模型聊天。TURN 地址及凭据由信令服务自动下发，也可以在连接设置中额外填写。页面支持流式回复、停止生成、清空历史、模型列表，以及连接中断后的自动重连。Token 不写入浏览器持久存储。
+打开 `https://chat.example.com`，填写房间号和 Token，点击连接后选择模型聊天。连接设置中的“聊天接口”可切换 Ollama 原生接口和 OpenAI 兼容接口；两种模式都会自动获取可用模型，OpenAI 兼容模式通过流式 Chat Completions 聊天。TURN 地址及凭据由信令服务自动下发，也可以在连接设置中额外填写。页面支持流式回复、停止生成、清空历史，以及连接中断后的自动重连。Token 不写入浏览器持久存储。
 
 ## 配置与接口
 
-Agent 的 `ALLOWED_PATHS` 默认精确允许 `GET /api/tags`、`POST /api/chat` 和 `POST /api/generate`。路径穿越、前缀匹配、替换请求主机和 HTTP 重定向不会绕过白名单。`/api/version` 可显式加入并以 GET 访问。不要开放模型删除、下载等接口作为聊天所需权限。
+Agent 的 `ALLOWED_PATHS` 默认精确允许 `GET /api/tags`、`POST /api/chat`、`POST /api/generate`、`GET /v1/models` 和 `POST /v1/chat/completions`。路径穿越、前缀匹配、替换请求主机和 HTTP 重定向不会绕过白名单。`/api/version` 可显式加入并以 GET 访问。不要开放模型删除、下载等接口作为聊天所需权限。
+
+### OpenAI 兼容接口
+
+家庭 Agent 默认把 `/v1/` 请求转发到 `OLLAMA_BASE`，因此本机 Ollama 无需额外配置。在页面连接设置中选择“OpenAI 兼容”，连接后会调用 Ollama 的 `GET /v1/models`；选择已安装的 `gemma3:1b` 即可通过 `POST /v1/chat/completions` 聊天。可先在家庭电脑上用 `ollama list` 确认模型已安装。
+
+其他 OpenAI 兼容服务可在家庭 Agent 环境文件中设置 `OPENAI_BASE=https://example.com`（只填写源站，不附加 `/v1`）；如需鉴权，再设置 `OPENAI_API_KEY`。密钥仅由家庭 Agent 添加到上游请求，不会发送到浏览器或信令服务。服务需要支持模型列表和流式 Chat Completions 端点；如果不提供模型列表，页面仍可手动输入模型 ID。
 
 信令服务的 `STUN_URL`、`TURN_URL`（可用逗号分隔多个地址）、`TURN_USER` 和 `TURN_PASS` 会随鉴权后的 `ready` 消息下发给浏览器和 Agent，并与两端的本地设置合并去重；两端都没有任何配置时才使用公共 STUN。`/api/setup` 只有携带 `Authorization: Bearer <Token>` 时才返回 Token 和接入指令，且从不返回 TURN 密码。
 

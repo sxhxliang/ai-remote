@@ -313,6 +313,43 @@ async fn main() -> Result<()> {
                 && serde_json::from_slice::<Value>(&tags.bytes)?["models"].is_array(),
             tags.detail(),
         );
+        let openai_models = rpc(
+            &dc,
+            &mut rx,
+            request("openai-models", "GET", "/v1/models", None, None),
+        )
+        .await?;
+        check(
+            &mut failures,
+            "openai_models",
+            openai_models.done
+                && openai_models.status == Some(200)
+                && serde_json::from_slice::<Value>(&openai_models.bytes)?["data"]
+                    .as_array()
+                    .is_some_and(|models| models.iter().any(|model| model["id"] == "qwen2.5:7b")),
+            openai_models.detail(),
+        );
+        let openai_chat = rpc(
+            &dc,
+            &mut rx,
+            request(
+                "openai-chat",
+                "POST",
+                "/v1/chat/completions",
+                Some(body.clone()),
+                None,
+            ),
+        )
+        .await?;
+        check(
+            &mut failures,
+            "openai_stream_chat",
+            openai_chat.done
+                && openai_chat.status == Some(200)
+                && openai_chat.text().contains("中文流式响应正常")
+                && openai_chat.text().contains("data: [DONE]"),
+            openai_chat.detail(),
+        );
         let chat = rpc(
             &dc,
             &mut rx,

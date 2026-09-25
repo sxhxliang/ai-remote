@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { OllamaRemoteClient, safeRandomUUID } from './webrtcClient.js';
 import { readNdjson } from './ndjson.js';
+import { readSse } from './sse.js';
 import './style.css';
 
 const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 const initialConfig = {
   signalingUrl: local ? 'ws://127.0.0.1:8080/ws' : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws',
-  room: 'default', token: '', model: 'qwen2.5:7b',
+  room: 'default', token: '', model: 'qwen2.5:7b', apiMode: 'ollama',
   stunUrls: '', turnUrls: '', turnUsername: '', turnCredential: '', forceRelay: false,
 };
 const stateLabels = { disconnected: '未连接', connecting: '正在连接', waiting: '等待家里的 Agent', connected: '已连接', reconnecting: '正在重新连接', error: '连接失败' };
@@ -34,6 +35,8 @@ function parseUrlConfig() {
   if (signalingUrl) cfg.signalingUrl = signalingUrl;
   const model = get('model', 'm');
   if (model) cfg.model = model;
+  const apiMode = get('apiMode');
+  if (apiMode === 'openai' || apiMode === 'ollama') cfg.apiMode = apiMode;
   const stunUrls = get('stunUrls', 'stun');
   if (stunUrls) cfg.stunUrls = stunUrls;
   const turnUrls = get('turnUrls', 'turn');
@@ -55,12 +58,16 @@ export default function App() {
   const [route, setRoute] = useState('');
   const [error, setError] = useState('');
   const [models, setModels] = useState([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [customModelMode, setCustomModelMode] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const clientRef = useRef(null);
   const closingRef = useRef(Promise.resolve());
   const connectionActionRef = useRef(0);
+  const modelLoadRef = useRef(0);
+  const apiModeRef = useRef(initialConfig.apiMode);
   const abortRef = useRef(null);
   const sendingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -70,6 +77,7 @@ export default function App() {
   const doConnect = async (activeConfig) => {
     setError('');
     const c = activeConfig || config;
+    apiModeRef.current = c.apiMode;
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(c.room.trim()) || c.token.length < 16) {
       setError('房间号需为 1–64 个字母、数字、短横线或下划线，Token 至少 16 个字符');
       return;
@@ -100,7 +108,7 @@ export default function App() {
         if (detail.error) setError(detail.error);
         if (next === 'connected') {
           setError('');
-          loadModels(client);
+          loadModels(client, apiModeRef.current);
           client.getConnectionInfo().then((info) => {
             if (client === clientRef.current && mountedRef.current) setRoute(info?.relay ? 'TURN 中继' : '直接连接');
           }).catch(() => {});
@@ -165,22 +173,34 @@ export default function App() {
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }); }, [messages]);
   const update = (key) => (event) => setConfig((previous) => ({ ...previous, [key]: event.target.type === 'checkbox' ? event.target.checked : event.target.value }));
 
-  const loadModels = async (client) => {
+  const loadModels = async (client, apiMode = config.apiMode) => {
+    if (!client) return;
+    const load = ++modelLoadRef.current;
+    setLoadingModels(true);
     try {
-      const response = await client.fetch('/api/tags');
+      const response = await client.fetch(apiMode === 'openai' ? '/v1/models' : '/api/tags');
       if (!response.ok) throw new Error('无法读取模型列表：HTTP ' + response.status);
       const data = await response.json();
-      if (client !== clientRef.current || !mountedRef.current) return;
-      const names = (data.models || []).map((model) => model.name || model.model).filter(Boolean);
+      if (client !== clientRef.current || !mountedRef.current || load !== modelLoadRef.current) return;
+      const names = (apiMode === 'openai' ? data.data || [] : data.models || [])
+        .map((model) => apiMode === 'openai' ? model.id : model.name || model.model).filter(Boolean);
       setModels(names);
-      setConfig((previous) => ({ ...previous, model: names.includes(previous.model) ? previous.model : names[0] || previous.model }));
+      if (names.length > 0) {
+        setConfig((previous) => ({
+          ...previous,
+          model: names.includes(previous.model) ? previous.model : names[0],
+        }));
+      }
     } catch (failure) {
-      if (client === clientRef.current && mountedRef.current) setError(failure.message);
+      if (client === clientRef.current && mountedRef.current && load === modelLoadRef.current) setError(failure.message);
+    } finally {
+      if (client === clientRef.current && mountedRef.current && load === modelLoadRef.current) setLoadingModels(false);
     }
   };
 
   const handleDisconnect = () => {
     ++connectionActionRef.current;
+    ++modelLoadRef.current;
     abortRef.current?.abort();
     const client = clientRef.current;
     clientRef.current = null;
@@ -188,6 +208,9 @@ export default function App() {
     setState('disconnected');
     setError('');
     setRoute('');
+    setModels([]);
+    setLoadingModels(false);
+    setCustomModelMode(false);
   };
 
   const handleSend = async () => {
@@ -207,26 +230,30 @@ export default function App() {
       if (mountedRef.current) setMessages((previous) => previous.map((message) => message.id === assistantId ? { ...message, ...change } : message));
     };
     try {
-      const response = await client.fetch('/api/chat', {
+      const response = await client.fetch(config.apiMode === 'openai' ? '/v1/chat/completions' : '/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: config.model, messages: history, stream: true }), signal: controller.signal,
       });
       if (!response.ok) {
         const text = await response.text();
         let reason = text;
-        try { reason = JSON.parse(text).error || text; } catch {}
-        throw new Error(reason || 'HTTP ' + response.status);
+        try {
+          const parsed = JSON.parse(text);
+          reason = parsed.error?.message || parsed.error || text;
+        } catch {}
+        throw new Error(typeof reason === 'string' ? reason : 'HTTP ' + response.status);
       }
       if (!response.body) throw new Error('模型没有返回响应内容');
       let content = '';
       let completed = false;
-      for await (const chunk of readNdjson(response.body)) {
-        if (chunk.error) throw new Error(chunk.error);
-        if (chunk.message?.content) {
-          content += chunk.message.content;
+      for await (const chunk of (config.apiMode === 'openai' ? readSse(response.body) : readNdjson(response.body))) {
+        if (chunk.error) throw new Error(chunk.error?.message || chunk.error);
+        const delta = config.apiMode === 'openai' ? chunk.choices?.[0]?.delta?.content : chunk.message?.content;
+        if (delta) {
+          content += delta;
           updateAssistant({ content });
         }
-        if (chunk.done) completed = true;
+        if (chunk.done || (config.apiMode === 'openai' && chunk.choices?.[0]?.finish_reason)) completed = true;
       }
       if (!completed) throw new Error('模型响应在完成前中断');
     } catch (failure) {
@@ -255,6 +282,16 @@ export default function App() {
       <details className="settings" open={!connected}>
         <summary>连接设置</summary>
         <div className="settings-grid">
+          <label>聊天接口<select value={config.apiMode} onChange={(event) => {
+            const apiMode = event.target.value;
+            apiModeRef.current = apiMode;
+            setConfig((previous) => ({ ...previous, apiMode }));
+            setModels([]);
+            if (clientRef.current) loadModels(clientRef.current, apiMode);
+          }} disabled={busy}>
+            <option value="ollama">Ollama 原生</option>
+            <option value="openai">OpenAI 兼容</option>
+          </select></label>
           <label className="wide">信令地址<input value={config.signalingUrl} onChange={update('signalingUrl')} placeholder="wss://chat.example.com/ws" /></label>
           <label>房间号<input value={config.room} onChange={update('room')} autoComplete="off" /></label>
           <label>Token<input type="password" value={config.token} onChange={update('token')} autoComplete="off" /></label>
@@ -271,8 +308,79 @@ export default function App() {
       </details>
       <section className="chat" aria-label="聊天">
         <div className="chat-toolbar">
-          <label>模型<input list="models" value={config.model} onChange={update('model')} disabled={busy} /></label>
-          <datalist id="models">{models.map((model) => <option key={model} value={model} />)}</datalist>
+          <div className="chat-toolbar-left">
+            <label htmlFor="model-select">模型</label>
+            {customModelMode ? (
+              <div className="custom-model-box">
+                <input
+                  id="model-select"
+                  value={config.model}
+                  onChange={update('model')}
+                  placeholder="输入模型名称，如 llama3:8b"
+                  disabled={busy}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    setCustomModelMode(false);
+                    if (models.length > 0 && !models.includes(config.model)) {
+                      setConfig((prev) => ({ ...prev, model: models[0] }));
+                    }
+                  }}
+                  title="返回模型下拉列表"
+                >
+                  列表选择
+                </button>
+              </div>
+            ) : (
+              <select
+                id="model-select"
+                value={config.model}
+                onChange={(e) => {
+                  if (e.target.value === '__custom__') {
+                    setCustomModelMode(true);
+                  } else {
+                    setConfig((prev) => ({ ...prev, model: e.target.value }));
+                  }
+                }}
+                disabled={busy || !connected || loadingModels}
+              >
+                {loadingModels ? (
+                  <option value="">正在获取模型列表...</option>
+                ) : !connected ? (
+                  <option value={config.model}>{config.model ? `${config.model} (连接后自动获取)` : '未连接 (连接后自动获取)'}</option>
+                ) : models.length === 0 ? (
+                  <>
+                    <option value={config.model}>{config.model ? `${config.model} (未获取到模型)` : '未发现模型'}</option>
+                    <option value="__custom__">✏️ 自定义输入模型...</option>
+                  </>
+                ) : (
+                  <>
+                    {models.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                    {!models.includes(config.model) && config.model && (
+                      <option value={config.model}>{config.model} (自定义)</option>
+                    )}
+                    <option value="__custom__">✏️ 自定义输入模型...</option>
+                  </>
+                )}
+              </select>
+            )}
+            {connected && (
+              <button
+                type="button"
+                className="text-button refresh-button"
+                onClick={() => clientRef.current && loadModels(clientRef.current)}
+                disabled={loadingModels || busy}
+                title="重新获取可用模型列表"
+              >
+                {loadingModels ? '获取中…' : '🔄 刷新'}
+              </button>
+            )}
+          </div>
           <button className="text-button" onClick={() => setMessages([])} disabled={busy || !messages.length}>清空对话</button>
         </div>
         <div className="messages" aria-live="polite">
