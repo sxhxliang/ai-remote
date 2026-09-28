@@ -224,8 +224,16 @@ async fn main() -> Result<()> {
     }
     tracing_subscriber::fmt::init();
     let config = Arc::new(Config::from_env()?);
+    let mut signaling_display = config.signaling.clone();
+    signaling_display.set_query(None);
+    signaling_display.set_fragment(None);
     println!("🏠 AI Remote 家里电脑 Agent 已启动！");
-    println!("🔗 正在连接信令服务器: {}", config.signaling);
+    println!("🔗 正在连接信令服务器: {signaling_display}");
+    println!("🏷️  房间号: {}", config.room);
+    println!(
+        "🌐 浏览器连接链接（包含 Token，请勿分享）: {}",
+        config.browser_url
+    );
     println!("🤖 本地 Ollama 接口: {}", config.base);
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();

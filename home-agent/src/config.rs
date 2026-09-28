@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashSet, env, time::Duration};
 use url::Url;
+use uuid::Uuid;
 use webrtc::{
     ice_transport::{ice_credential_type::RTCIceCredentialType, ice_server::RTCIceServer},
     peer_connection::{
@@ -49,6 +50,8 @@ fn parse_ice_servers(text: &str) -> Result<Vec<RTCIceServer>> {
 
 pub struct Config {
     pub signaling: Url,
+    pub room: String,
+    pub browser_url: Url,
     pub rtc: RTCConfiguration,
     pub base: Url,
     pub openai_base: Url,
@@ -56,6 +59,31 @@ pub struct Config {
     pub allowed: HashSet<String>,
     pub timeout: Duration,
     pub http: reqwest::Client,
+}
+
+fn select_room(cli_room: Option<String>, configured_room: Option<String>) -> String {
+    cli_room
+        .or_else(|| configured_room.filter(|room| !room.is_empty()))
+        .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
+fn browser_url(signaling: &Url, room: &str, token: &str) -> Result<Url> {
+    let mut url = signaling.clone();
+    let scheme = match signaling.scheme() {
+        "wss" => "https",
+        "ws" => "http",
+        _ => anyhow::bail!("SIGNALING_URL must use ws:// or wss://"),
+    };
+    url.set_scheme(scheme)
+        .map_err(|_| anyhow::anyhow!("Cannot derive browser URL from SIGNALING_URL"))?;
+    url.set_path("/");
+    url.set_query(None);
+    let fragment = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("room", room)
+        .append_pair("token", token)
+        .finish();
+    url.set_fragment(Some(&fragment));
+    Ok(url)
 }
 
 impl Config {
@@ -106,9 +134,7 @@ impl Config {
             signaling.username().is_empty() && signaling.password().is_none(),
             "Use SIGNALING_TOKEN instead of URL credentials"
         );
-        let room = cli_room
-            .or_else(|| env::var("ROOM_ID").ok())
-            .unwrap_or_else(|| "default".into());
+        let room = select_room(cli_room, env::var("ROOM_ID").ok());
         let token = cli_token
             .or_else(|| env::var("SIGNALING_TOKEN").ok())
             .context("SIGNALING_TOKEN is required (set via env or pass as argument: ai-remote-agent <url> <token>)")?;
@@ -124,6 +150,7 @@ impl Config {
             token.len() >= 16,
             "SIGNALING_TOKEN must contain at least 16 characters"
         );
+        let browser_url = browser_url(&signaling, &room, &token)?;
         let existing: Vec<(String, String)> = signaling
             .query_pairs()
             .filter(|(name, _)| !matches!(name.as_ref(), "room" | "role" | "token"))
@@ -245,6 +272,8 @@ impl Config {
             .build()?;
         Ok(Self {
             signaling,
+            room,
+            browser_url,
             rtc,
             base,
             openai_base,
@@ -382,6 +411,32 @@ pub fn validate_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generates_a_room_only_when_unconfigured() {
+        let generated = select_room(None, None);
+        assert_eq!(Uuid::parse_str(&generated).unwrap().get_version_num(), 4);
+        assert!(Uuid::parse_str(&select_room(None, Some(String::new()))).is_ok());
+        assert_eq!(select_room(None, Some("desktop".into())), "desktop");
+        assert_eq!(
+            select_room(Some("laptop".into()), Some("desktop".into())),
+            "laptop"
+        );
+    }
+
+    #[test]
+    fn browser_link_contains_the_room_and_encoded_token() {
+        let signaling = Url::parse("wss://chat.example.com/ws?existing=value").unwrap();
+        let link = browser_url(&signaling, "home-desktop", "secret&with=#symbols").unwrap();
+        assert_eq!(
+            link.as_str(),
+            "https://chat.example.com/#room=home-desktop&token=secret%26with%3D%23symbols"
+        );
+        assert_eq!(
+            signaling.as_str(),
+            "wss://chat.example.com/ws?existing=value"
+        );
+    }
 
     #[tokio::test]
     async fn accepts_browser_ice_json_with_password_credentials() {

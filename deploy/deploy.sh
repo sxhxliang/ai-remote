@@ -231,7 +231,7 @@ EOF
 deploy_agent() {
   local ws_url="${1:-${SIGNALING_URL:-}}"
   local token="${2:-${SIGNALING_TOKEN:-}}"
-  local room="${ROOM_ID:-default}"
+  local room="${ROOM_ID:-}"
 
   log_info "开始配置并部署家里 Agent (Home Agent)..."
   check_root
@@ -309,7 +309,7 @@ EOF
     printf "${GREEN}================================================================================${NC}\n"
     printf "  📡 服务状态:       ${GREEN}active (running)${NC}\n"
     printf "  🔌 连接信令:       %s\n" "$ws_url"
-    printf "  🔑 房间号:         %s\n" "$room"
+    printf "  🔑 房间号:         %s\n" "${room:-自动生成 UUID（查看 Agent 日志）}"
     printf "  🦙 本地 Ollama:    http://127.0.0.1:11434\n"
     printf "  🧭 STUN/TURN:      由信令服务在连接时自动下发，无需在此配置\n"
     printf "  📋 查看实时日志:   journalctl -u ollama-link-home-agent -f\n"

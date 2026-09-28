@@ -198,7 +198,7 @@ VPS 防火墙与云安全组需放行 **443/TCP、3478/UDP、49160–49200/UDP**
 
 ### 家庭电脑
 
-Ollama 使用默认的 `127.0.0.1:11434`。将 `deploy/home-agent.env.example` 复制为自己的配置，填入 VPS 的信令地址、房间号和相同的 Token。STUN/TURN 由信令服务自动下发，通常无需配置。
+Ollama 使用默认的 `127.0.0.1:11434`。将 `deploy/home-agent.env.example` 复制为自己的配置，填入 VPS 的信令地址和 Token。未设置 `ROOM_ID`（或将其留空）时，Agent 每次启动会生成一个新的 UUID 房间号，并在启动输出中打印房间号及浏览器连接链接。链接的 URL 片段包含 Token，请勿转发给无关人员。要在重启后继续使用同一个房间，可显式设置 `ROOM_ID=home-desktop`，或启动时传入 `--room home-desktop`。旧配置若写有 `ROOM_ID=default`，需删除该行或改为空值，才会启用自动生成。STUN/TURN 由信令服务自动下发，通常无需配置。
 
 使用一键安装包时，`config/home-agent.env` 已创建。Windows 编辑配置并运行 Agent：
 
@@ -218,6 +218,8 @@ set -a
 set +a
 "$HOME/.local/bin/ai-remote-agent"
 ```
+
+若以 systemd 运行，可用 `journalctl -u ollama-link-home-agent -n 30 --no-pager` 查看启动时打印的连接链接。链接根据 `SIGNALING_URL` 推导出同一主机上的网页根路径（例如 `wss://chat.example.com/ws` 对应 `https://chat.example.com/`）；若网页部署在其他地址，请在该网页手动填写输出的房间号和 Token。
 
 Windows 从源码构建和运行：
 
@@ -243,6 +245,45 @@ Linux 使用 `deploy/ollama-link-home-agent.service`，程序路径为 `/opt/oll
 ### 公司浏览器
 
 打开 `https://chat.example.com`，填写房间号和 Token，点击连接后选择模型聊天。连接设置中的“聊天接口”可切换 Ollama 原生接口和 OpenAI 兼容接口；两种模式都会自动获取可用模型，OpenAI 兼容模式通过流式 Chat Completions 聊天。TURN 地址及凭据由信令服务自动下发，也可以在连接设置中额外填写。页面支持流式回复、停止生成、清空历史，以及连接中断后的自动重连。Token 不写入浏览器持久存储。
+
+### 多台家庭电脑接入示例
+
+用房间号区分电脑：每台家庭电脑运行一个 Agent。本例为便于重启后保持相同的浏览器配置，显式设置不同的 `ROOM_ID`：桌面电脑使用 `home-desktop`，笔记本使用 `home-laptop`；也可以不设置，让两台 Agent 各自生成 UUID。两台电脑连接同一个 VPS 信令服务；信令服务无需为它们分别设置 `ROOM_ID`。未配置 `ROOM_TOKENS_JSON` 时，所有房间使用信令服务的同一个 `SIGNALING_TOKEN`。先在 VPS 的信令配置中设置一个至少 16 个字符的随机 Token：
+
+```dotenv
+SIGNALING_TOKEN=replace-with-a-strong-random-token
+```
+
+在**桌面电脑**的 `config/home-agent.env` 中填写（保留模板里的其他配置）：
+
+```dotenv
+SIGNALING_URL=wss://chat.example.com/ws
+ROOM_ID=home-desktop
+SIGNALING_TOKEN=replace-with-a-strong-random-token
+OLLAMA_BASE=http://127.0.0.1:11434
+```
+
+在**笔记本电脑**的 `config/home-agent.env` 中填写：
+
+```dotenv
+SIGNALING_URL=wss://chat.example.com/ws
+ROOM_ID=home-laptop
+SIGNALING_TOKEN=replace-with-a-strong-random-token
+OLLAMA_BASE=http://127.0.0.1:11434
+```
+
+将示例 Token 换成同一个实际 Token 后，在两台电脑上分别按上文“家庭电脑”一节的命令启动 Agent。`ROOM_ID` 在 Agent 启动时从环境文件读取；临时运行也可用 `ai-remote-agent --url wss://chat.example.com/ws --room home-desktop --token '替换为实际Token'` 指定，命令行参数会覆盖环境文件中的对应值。
+
+公司浏览器打开 `https://chat.example.com`，在“连接设置”中选择要连接的电脑：
+
+| 目标电脑 | 房间号 | Token |
+| --- | --- | --- |
+| 桌面电脑 | `home-desktop` | 上述信令 Token |
+| 笔记本电脑 | `home-laptop` | 上述信令 Token |
+
+填写后点击“连接”。切换电脑时修改房间号，再点击“应用设置并重新连接”。网页一次只连接一个房间；每个房间同时只允许一个 Agent 和一个浏览器。若两台 Agent 使用相同的 `ROOM_ID`，后连接的一台会被拒绝。
+
+如需每台电脑使用独立 Token，可改在信令服务配置中设置 `ROOM_TOKENS_JSON`，例如 `ROOM_TOKENS_JSON='{"home-desktop":"replace-with-desktop-secret","home-laptop":"replace-with-laptop-secret"}'`。这时各 Agent 和浏览器分别使用对应房间的 Token，且只有映射中列出的房间可以连接，因此 Agent 必须显式设置与映射匹配的 `ROOM_ID`；上面的共享 `SIGNALING_TOKEN` 不再用于这些房间。信令服务的 `ROOM_ID` 用于生成默认接入信息，不负责登记 Agent，也不限制共享 Token 模式下可连接的房间。
 
 ## 配置与接口
 
