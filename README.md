@@ -246,6 +246,9 @@ Linux 使用 `deploy/ollama-link-home-agent.service`，程序路径为 `/opt/oll
 
 ## 配置与接口
 
+> 📘 **多 Agent 与生产部署完整指南**：有关多 Token 信令配置（`ROOM_TOKENS_JSON`）、各平台（Linux/macOS/Windows/Docker）Agent 启动命令、链接分享安全风险及故障排查手册，请参阅 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+
+
 Agent 的 `ALLOWED_PATHS` 默认精确允许 `GET /api/tags`、`POST /api/chat`、`POST /api/generate`、`GET /v1/models` 和 `POST /v1/chat/completions`。路径穿越、前缀匹配、替换请求主机和 HTTP 重定向不会绕过白名单。`/api/version` 可显式加入并以 GET 访问。不要开放模型删除、下载等接口作为聊天所需权限。
 
 ### OpenAI 兼容接口
