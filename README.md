@@ -4,6 +4,27 @@
 
 公司电脑只需打开浏览器，通过 WebRTC DataChannel 访问家里 Agent，再由 Agent 请求本机 Ollama。聊天数据不经过信令服务；连接需要中继时，由 TURN 转发加密的 WebRTC 数据。Ollama 保持监听本机回环地址，不需要暴露 11434，也不需要 VPN。
 
+
+## VPS 一键运维脚本 (安装/升级/卸载/多 Token 配置)
+
+在公网 VPS（Ubuntu 22.04+ / Debian 12+，x64 或 ARM64）上只需执行一行命令，即可通过交互式菜单或 CLI 完成全部运维操作：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sxhxliang/ai-remote/main/vps.sh | sudo bash
+```
+
+或克隆仓库后直接运行：
+```bash
+sudo ./vps.sh
+```
+
+**功能概览：**
+- **一键安装**：自动检测架构（x64/ARM64）、下载最新 Release 二进制与 Web 前端、生成高熵 Token 与随机 TURN 凭据、注册并启动 systemd 单元（`ollama-link-signaling` 与 `ollama-link-turn`）。
+- **平滑升级**：保留现有 `.env` 配置文件与端口设置，自动备份配置并下载最新版本程序与静态文件，重载 systemd 无缝重启。
+- **配置与多 Token 管理**：内置多 Token（`ROOM_TOKENS_JSON`）增加、删除、修改与格式校验向导，支持修改端口与全局 Token 并一键重启生效。
+- **状态与实时日志**：一键查看服务状态、公网直链与开放端口说明，支持 `sudo ./vps.sh logs signaling` 实时跟踪日志。
+- **彻底卸载**：支持停止并注销 systemd 服务，可选保留或清除配置文件（`/etc/ollama-link`）。
+
 ## 一键安装
 
 安装 [最新 Release](https://github.com/sxhxliang/ai-remote/releases/latest)，**无需 Rust、Node.js 或编译工具**。每个安装包包含家庭 Agent、信令服务器、TURN 服务器、已构建的 Web UI 和部署模板；按所在机器的用途启动对应服务即可。

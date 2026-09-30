@@ -35,6 +35,13 @@
 
 ## 1. 多 Token 信令服务配置
 
+> 💡 **VPS 一键管理脚本**：我们提供了专用的全自动 VPS 管理脚本 `vps.sh`，支持一键安装、平滑升级、多 Token 交互配置、服务启停与彻底卸载：
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/sxhxliang/ai-remote/main/vps.sh | sudo bash
+> ```
+> 详细选项可运行 `sudo ./vps.sh --help`。
+
+
 信令服务负责在浏览器与各 Home-Agent 之间转发 WebRTC 握手信令（SDP Offer/Answer 和 ICE Candidates）。
 
 ### 环境变量设置说明
