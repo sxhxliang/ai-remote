@@ -287,6 +287,45 @@ OLLAMA_BASE=http://127.0.0.1:11434
 
 ## 配置与接口
 
+### 远程 Markdown 文件
+
+Home Agent 支持通过现有 WebRTC DataChannel 浏览本地目录、读取 Markdown、预览、新建和保存文件，无需新增端口，也不依赖 Ollama 是否运行。文件内容不通过信令服务；连接使用 TURN 时经过加密中继。
+
+在家庭电脑的 `home-agent.env` 中配置一个已存在的共享目录，然后重启 Agent：
+
+```dotenv
+FILE_ROOT=/srv/ai-remote/notes
+FILE_WRITE_ENABLED=true
+```
+
+macOS 可将 `FILE_ROOT` 改为 `"/Users/你的用户名/Documents/notes"`，Windows 可使用 `"C:\Users\你的用户名\Documents\notes"`。前台直接运行时也可以通过环境变量设置。未设置 `FILE_ROOT` 时文件访问关闭；设置目录后默认只读，只有显式设置 `FILE_WRITE_ENABLED=true`（或 `1`）才允许写入。无效的目录会阻止 Agent 启动。
+
+浏览器连接后切换到“文件”，进入子目录并选择 `.md` 或 `.markdown` 文件；支持标题、列表、表格、代码块和相对 Markdown 链接。点击“编辑”修改内容，再点击“保存”写回家庭电脑。“新建”在当前目录创建文件，首次保存前不会落盘。保存冲突会保留草稿并提示重新读取；切换文件、手动重连或离开页面时会提示未保存的修改。网络自动重连会保留当前草稿。预览不执行文档 HTML，也不自动加载图片。
+
+文件须为 UTF-8，每个文件最多 512 KiB，每层目录最多 2000 个项目（包含被隐藏的项目）；超限会返回错误，可改为共享更小的子目录。只开放指定目录下的普通 Markdown 文件与子目录，拒绝隐藏路径、绝对路径、`..`、符号链接和特殊文件。浏览器只收到相对路径。暂不支持删除、重命名、创建目录或其他文件格式。
+
+所有持有该房间 Token 的客户端都拥有配置的文件权限，因此只共享计划远程访问的目录。共享目录及其中的硬链接应由可信本地用户管理。保存使用同目录临时文件后原子替换，并验证读取时的 SHA-256 版本，拒绝已检测到的本地修改及并发远程保存冲突；无法锁住其他本地编辑器，请避免本地和远程同时保存同一文件。写入已提交但连接随后中断时，请重新读取核对结果。
+
+使用仓库的 systemd 服务时，`ProtectHome=true` 和 `ProtectSystem=strict` 默认阻止访问 home 目录和写入共享目录。建议放在 `/srv/ai-remote/notes`，给 `ollama-link` 用户相应权限，并通过 `systemctl edit ollama-link-home-agent` 添加以下配置后重启（路径需与实际 `FILE_ROOT` 一致）：
+
+```ini
+[Service]
+ReadWritePaths=/srv/ai-remote/notes
+```
+
+只读共享无需 `ReadWritePaths`。目录必须事先存在；保持服务沙箱设置，只为所选目录授予权限。
+
+文件接口独立于 Ollama 的 `ALLOWED_PATHS`，不向上游 HTTP 服务转发，仍需先通过房间 Token 鉴权并建立 WebRTC 连接：
+
+| 方法 | DataChannel Fetch 路径 | 内容 |
+| --- | --- | --- |
+| GET | `/files/config` | `enabled`、`writable`、`maxFileBytes` |
+| GET | `/files/list?path=笔记` | 子目录和 Markdown 文件列表；空 `path` 表示共享根目录 |
+| GET | `/files/read?path=笔记/example.md` | `path`、`content`、`revision` |
+| PUT | `/files/write` | JSON `{ "path": "笔记/example.md", "content": "# Hello", "revision": "读取返回的版本" }`；新文件版本为 `null` |
+
+查询参数中的路径需 URL 编码；响应使用现有分片与 ACK 流控。写入成功返回新的 `revision`，只读或路径越界返回 403，文件不存在返回 404，版本冲突返回 409，大小超限返回 413，非 UTF-8 返回 415。
+
 Agent 的 `ALLOWED_PATHS` 默认精确允许 `GET /api/tags`、`POST /api/chat`、`POST /api/generate`、`GET /v1/models` 和 `POST /v1/chat/completions`。路径穿越、前缀匹配、替换请求主机和 HTTP 重定向不会绕过白名单。`/api/version` 可显式加入并以 GET 访问。不要开放模型删除、下载等接口作为聊天所需权限。
 
 ### OpenAI 兼容接口

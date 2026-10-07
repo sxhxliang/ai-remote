@@ -93,6 +93,9 @@ export async function startLocalStack({ build = true, mockPort = 11434 } = {}) {
   delete env.OPENAI_API_KEY;
   delete env.FORCE_RELAY;
   delete env.PROBE_TURN_URL;
+  delete env.PROBE_FILES;
+  delete env.FILE_ROOT;
+  delete env.FILE_WRITE_ENABLED;
   const children = new Set();
   const stack = { env, cert, key, children, http: 'http://127.0.0.1:5173', wss: 'wss://localhost:18443/ws' };
   let stopped = false;

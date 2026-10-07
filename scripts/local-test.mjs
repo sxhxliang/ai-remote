@@ -5,7 +5,9 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startLocalStack, binary } from './local-stack.mjs';
 
@@ -150,6 +152,33 @@ try {
   pass('local browser settings are filled automatically');
   await authAndRooms();
   await probe('direct');
+  const fileFixture = await mkdtemp(join(tmpdir(), 'ai-remote-file-probe-'));
+  try {
+    const fileRoot = join(fileFixture, 'shared');
+    await mkdir(join(fileRoot, 'notes'), { recursive: true });
+    await writeFile(join(fileRoot, 'notes/welcome.md'), '# 你好 🌍\n');
+    await writeFile(join(fileFixture, 'outside.md'), 'outside');
+    // Windows symlink creation can require admin privileges. A directory named
+    // link.md still verifies rejection of non-regular files in that environment.
+    if (process.platform === 'win32') {
+      await mkdir(join(fileRoot, 'link.md'));
+      await symlink(fileFixture, join(fileRoot, 'escape'), 'junction');
+    } else {
+      await symlink(join(fileFixture, 'outside.md'), join(fileRoot, 'link.md'));
+      await symlink(fileFixture, join(fileRoot, 'escape'));
+    }
+    await probe('files-disabled', { PROBE_FILES: 'disabled' });
+    await stack.restartAgent({ FILE_ROOT: fileRoot });
+    await probe('files-readonly', { PROBE_FILES: 'read' });
+    await stack.restartAgent({ FILE_ROOT: fileRoot, FILE_WRITE_ENABLED: 'true' });
+    await probe('files-write', { PROBE_FILES: 'write' });
+    assert.equal(await readFile(join(fileRoot, 'notes/new.md'), 'utf8'), '# Edited');
+    assert.equal(await readFile(join(fileFixture, 'outside.md'), 'utf8'), 'outside');
+    pass('remote file saves reach disk without modifying files outside the shared root');
+  } finally {
+    await stack.restartAgent();
+    await rm(fileFixture, { recursive: true, force: true });
+  }
   await probe('reconnect', {}, ['--connect-only']);
   await stack.restartSignaling();
   await probe('agent-auto-reconnect', {}, ['--connect-only']);
@@ -178,6 +207,7 @@ try {
   await probe('upstream-timeout', {}, ['--timeout-check']);
   const requests = await fetch(stack.env.OLLAMA_BASE + '/__mock__/requests').then((response) => response.json());
   assert.ok(!requests.some((request) => request.path === '/api/delete'));
+  assert.ok(!requests.some((request) => request.path.startsWith('/files')));
   pass('denied paths never reach Ollama');
   assert.ok(requests.some((request) => request.scenario === 'burst' && request.aborted));
   pass('cancellation closes the upstream HTTP request');

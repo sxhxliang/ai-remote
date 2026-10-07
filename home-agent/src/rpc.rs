@@ -1,4 +1,5 @@
 use crate::config::{Config, CHUNK_BYTES, MAX_FRAME_BYTES, MAX_REQUESTS, MAX_REQUEST_BYTES};
+use crate::files::{self, FileRequest};
 use anyhow::{anyhow, bail, ensure, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::StreamExt;
@@ -213,7 +214,12 @@ impl Rpc {
     }
 
     fn submit(self: &Arc<Self>, request: Request) {
-        if let Err(error) = self.config.request_url(&request.method, &request.path) {
+        if files::is_file_request(&request.path) {
+            if let Err(error) = files::parse_request(&request.method, &request.path) {
+                self.fail(&request.id, error.status, error.message);
+                return;
+            }
+        } else if let Err(error) = self.config.request_url(&request.method, &request.path) {
             self.fail(&request.id, 403, &error.to_string());
             return;
         }
@@ -259,6 +265,7 @@ impl Rpc {
                     } else {
                         502
                     };
+                    active.cancel.cancel();
                     let _ = rpc.send(json!({"type":"error", "id":request.id, "status":status, "message":error.to_string()})).await;
                 }
             }
@@ -292,6 +299,9 @@ impl Rpc {
     }
 
     async fn forward(&self, request: &Request, active: &Active) -> Result<()> {
+        if files::is_file_request(&request.path) {
+            return self.serve_file(request, active).await;
+        }
         let url = self.config.request_url(&request.method, &request.path)?;
         let mut builder = self
             .config
@@ -343,6 +353,40 @@ impl Rpc {
                 let seq = active.sent.fetch_add(1, Ordering::SeqCst);
                 self.send(json!({"type":"chunk", "id":request.id, "seq":seq, "data":STANDARD.encode(chunk)})).await?;
             }
+        }
+        self.send(json!({"type":"done", "id":request.id})).await
+    }
+
+    async fn serve_file(&self, request: &Request, active: &Active) -> Result<()> {
+        let operation = match files::parse_request(&request.method, &request.path) {
+            Ok(operation) => operation,
+            Err(error) => return self.send(json!({"type":"error", "id":request.id, "status":error.status, "message":error.message})).await,
+        };
+        let result = if let Some(store) = self.config.files.clone() {
+            let body = request.body.clone();
+            let cancel = active.cancel.clone();
+            tokio::task::spawn_blocking(move || store.handle(operation, body.as_deref(), &cancel))
+                .await?
+        } else if matches!(operation, FileRequest::Config) {
+            Ok(json!({"enabled":false, "writable":false, "maxFileBytes":files::MAX_FILE_BYTES}))
+        } else {
+            Err(files::FileError {
+                status: 403,
+                message: "未启用文件共享，请在 Agent 上设置 FILE_ROOT",
+            })
+        };
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => return self.send(json!({"type":"error", "id":request.id, "status":error.status, "message":error.message})).await,
+        };
+        self.send(json!({"type":"response", "id":request.id, "status":200, "headers":{"content-type":"application/json; charset=utf-8", "cache-control":"no-store"}})).await?;
+        for chunk in serde_json::to_vec(&value)?.chunks(CHUNK_BYTES) {
+            active.credits.clone().acquire_owned().await?.forget();
+            let seq = active.sent.fetch_add(1, Ordering::SeqCst);
+            self.send(
+                json!({"type":"chunk", "id":request.id, "seq":seq, "data":STANDARD.encode(chunk)}),
+            )
+            .await?;
         }
         self.send(json!({"type":"done", "id":request.id})).await
     }

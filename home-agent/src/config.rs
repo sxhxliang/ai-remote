@@ -1,7 +1,7 @@
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::HashSet, env, time::Duration};
+use std::{collections::HashSet, env, sync::Arc, time::Duration};
 use url::Url;
 use uuid::Uuid;
 use webrtc::{
@@ -49,6 +49,7 @@ fn parse_ice_servers(text: &str) -> Result<Vec<RTCIceServer>> {
 }
 
 pub struct Config {
+    pub files: Option<Arc<crate::files::FileStore>>,
     pub signaling: Url,
     pub room: String,
     pub browser_url: Url,
@@ -270,7 +271,23 @@ impl Config {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .build()?;
+        let files = match env::var("FILE_ROOT") {
+            Ok(root) if !root.is_empty() => {
+                let writable = match env::var("FILE_WRITE_ENABLED").as_deref() {
+                    Ok("true" | "1") => true,
+                    Ok("false" | "0" | "") | Err(_) => false,
+                    _ => anyhow::bail!("FILE_WRITE_ENABLED must be true or false"),
+                };
+                Some(Arc::new(
+                    crate::files::FileStore::open(&root, writable)
+                        .context("Cannot open FILE_ROOT")?,
+                ))
+            }
+            Ok(_) | Err(env::VarError::NotPresent) => None,
+            Err(error) => return Err(error.into()),
+        };
         Ok(Self {
+            files,
             signaling,
             room,
             browser_url,

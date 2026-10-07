@@ -53,4 +53,40 @@ summary { cursor: pointer; font-size: 14px; font-weight: 600; }
 .composer textarea { resize: vertical; min-height: 74px; max-height: 220px; }
 .composer button { white-space: nowrap; }
 .mock-banner { margin-bottom: 16px; color: #87642e; background: #fff7df; border: 1px solid #ecdfba; padding: 11px 16px; border-radius: 8px; font-size: 12px; }
+.view-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.file-browser { border: 1px solid #dbe3dd; border-radius: 14px; background: #fff; overflow: hidden; }
+.file-toolbar { padding: 16px 22px; border-bottom: 1px solid #edf0eb; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.file-mode { margin-left: 12px; color: #718477; font-size: 12px; }
+.file-hint { margin: 0; padding: 20px; color: #718477; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.file-notice { margin: 12px 22px; color: #21614d; font-size: 13px; }
+.file-browser > .error { margin-top: 12px; }
+.file-layout { display: grid; grid-template-columns: 235px minmax(0, 1fr); min-height: 450px; }
+.file-sidebar { border-right: 1px solid #edf0eb; background: #fcfdfa; padding: 12px; min-width: 0; }
+.file-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 8px 12px; font-size: 12px; }
+.file-breadcrumbs button { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.file-entries { max-height: 440px; overflow: auto; }
+.file-entry { display: flex; gap: 10px; width: 100%; text-align: left; padding: 10px; background: transparent; border: 0; color: #426353; font-size: 13px; font-weight: 400; overflow-wrap: anywhere; }
+.file-entry:hover:not(:disabled), .file-entry.selected { background: #e6f0e7; }
+.new-file { display: grid; gap: 10px; padding: 18px 4px 4px; border-top: 1px solid #edf0eb; margin-top: 16px; }
+.file-document { min-width: 0; padding: 20px; }
+.document-heading { display: flex; gap: 12px; align-items: baseline; justify-content: space-between; font-size: 14px; overflow-wrap: anywhere; }
+.document-heading span { font-size: 12px; color: #718477; flex-shrink: 0; }
+.document-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.document-actions button { font-size: 12px; padding: 7px 12px; }
+.markdown-editor { display: block; min-height: 380px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 14px; line-height: 1.7; tab-size: 2; }
+.markdown-preview { min-height: 340px; max-height: 65vh; overflow: auto; overflow-wrap: anywhere; line-height: 1.8; font-size: 14px; }
+.markdown-preview h1 { font-size: 26px; }
+.markdown-preview h2 { font-size: 21px; }
+.markdown-preview h3 { font-size: 17px; }
+.markdown-preview pre { padding: 14px; overflow: auto; border-radius: 8px; background: #f3f6f1; }
+.markdown-preview code { font-size: 13px; background: #f3f6f1; }
+.markdown-preview blockquote { margin-left: 0; border-left: 3px solid #a9c4b2; padding-left: 16px; color: #64776c; }
+.markdown-preview table { border-collapse: collapse; display: block; overflow: auto; }
+.markdown-preview th, .markdown-preview td { border: 1px solid #dbe3dd; padding: 7px 12px; }
+.markdown-preview input[type=checkbox] { width: auto; }
+.markdown-preview a, .markdown-link { color: #21614d; text-decoration: underline; }
+.markdown-link { background: none; border: 0; padding: 0; font: inherit; text-align: left; }
+.image-placeholder { color: #718477; font-size: 12px; }
+.document-footer { margin-top: 12px; color: #7b887f; font-size: 11px; }
+@media (max-width: 620px) { .file-layout { grid-template-columns: 1fr; } .file-sidebar { border-right: 0; border-bottom: 1px solid #edf0eb; } .file-entries { max-height: 180px; } .file-document { padding: 14px; } .file-toolbar { padding: 14px; } .file-mode { display: block; margin: 4px 0 0; } .new-file { grid-template-columns: minmax(0, 1fr) auto; align-items: end; } }
 @media (max-width: 620px) { .app { margin: 24px auto; padding: 0 12px; } .app-header { display: block; } .connection-badge { display: inline-block; margin-top: 16px; } .settings-grid { grid-template-columns: 1fr; } .messages { padding: 18px; } .chat-toolbar { flex-wrap: wrap; gap: 8px; } .chat-toolbar input, .chat-toolbar select { max-width: 170px; } .composer { padding: 14px; } .message.user { margin-left: 7%; } }

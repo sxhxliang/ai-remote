@@ -13,6 +13,7 @@ $agentEnvPath = (Resolve-Path -LiteralPath $EnvFile).Path
 $agentExecutable = (Resolve-Path -LiteralPath $Executable).Path
 $allowedKeys = @(
     'SIGNALING_URL', 'ROOM_ID', 'SIGNALING_TOKEN', 'OLLAMA_BASE', 'ALLOWED_PATHS',
+    'OPENAI_BASE', 'OPENAI_API_KEY', 'FILE_ROOT', 'FILE_WRITE_ENABLED',
     'STUN_URL', 'TURN_URL', 'TURN_USER', 'TURN_PASS', 'ICE_SERVERS_JSON',
     'FORCE_RELAY', 'REQUEST_TIMEOUT_SECS', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'RUST_LOG'
 )

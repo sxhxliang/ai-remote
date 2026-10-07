@@ -262,7 +262,151 @@ async fn main() -> Result<()> {
     );
     let connect_only = env::args().any(|arg| arg == "--connect-only");
     let timeout_checks = env::args().any(|arg| arg == "--timeout-check");
-    if timeout_checks {
+    if let Ok(mode) = env::var("PROBE_FILES") {
+        let config = rpc(
+            &dc,
+            &mut rx,
+            request("file-config", "GET", "/files/config", None, None),
+        )
+        .await?;
+        let settings: Value = serde_json::from_slice(&config.bytes)?;
+        check(
+            &mut failures,
+            "file_capabilities",
+            config.status == Some(200)
+                && settings["enabled"] == (mode != "disabled")
+                && settings["writable"] == (mode == "write"),
+            settings,
+        );
+        let list = rpc(
+            &dc,
+            &mut rx,
+            request("file-list", "GET", "/files/list", None, None),
+        )
+        .await?;
+        check(
+            &mut failures,
+            "file_list",
+            list.status == Some(if mode == "disabled" { 403 } else { 200 }),
+            list.detail(),
+        );
+        let read = rpc(
+            &dc,
+            &mut rx,
+            request(
+                "file-read",
+                "GET",
+                "/files/read?path=notes/welcome.md",
+                None,
+                None,
+            ),
+        )
+        .await?;
+        if mode != "disabled" {
+            let document: Value = serde_json::from_slice(&read.bytes)?;
+            check(
+                &mut failures,
+                "file_read_utf8",
+                read.status == Some(200) && document["content"] == "# 你好 🌍\n",
+                read.detail(),
+            );
+        } else {
+            check(
+                &mut failures,
+                "disabled_file_read",
+                read.status == Some(403),
+                read.detail(),
+            );
+        }
+        let content = "# 远程 Markdown 🌍\n".repeat(6000);
+        let write = rpc(
+            &dc,
+            &mut rx,
+            request(
+                "file-write",
+                "PUT",
+                "/files/write",
+                Some(json!({"path":"notes/new.md", "content":content, "revision":null})),
+                None,
+            ),
+        )
+        .await?;
+        check(
+            &mut failures,
+            "file_write_permission",
+            write.status == Some(if mode == "write" { 200 } else { 403 }),
+            write.detail(),
+        );
+        if mode == "write" {
+            let saved: Value = serde_json::from_slice(&write.bytes)?;
+            let read = rpc(
+                &dc,
+                &mut rx,
+                request(
+                    "file-large-read",
+                    "GET",
+                    "/files/read?path=notes/new.md",
+                    None,
+                    None,
+                ),
+            )
+            .await?;
+            let document: Value = serde_json::from_slice(&read.bytes)?;
+            check(
+                &mut failures,
+                "file_fragmented_roundtrip",
+                read.done
+                    && document["content"] == content
+                    && document["revision"] == saved["revision"],
+                read.detail(),
+            );
+            let updated = rpc(&dc, &mut rx, request("file-update", "PUT", "/files/write", Some(json!({"path":"notes/new.md", "content":"# Edited", "revision":saved["revision"]})), None)).await?;
+            check(
+                &mut failures,
+                "file_update",
+                updated.status == Some(200),
+                updated.detail(),
+            );
+            let conflict = rpc(&dc, &mut rx, request("file-conflict", "PUT", "/files/write", Some(json!({"path":"notes/new.md", "content":"stale", "revision":saved["revision"]})), None)).await?;
+            check(
+                &mut failures,
+                "file_conflict",
+                conflict.status == Some(409),
+                conflict.detail(),
+            );
+        }
+        for (index, path) in [
+            "../outside.md",
+            "/outside.md",
+            ".hidden.md",
+            "notes/private.txt",
+            "link.md",
+            "escape/outside.md",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let encoded: String = url::form_urlencoded::byte_serialize(path.as_bytes()).collect();
+            let denied = rpc(
+                &dc,
+                &mut rx,
+                request(
+                    &format!("file-denied-{index}"),
+                    "GET",
+                    &format!("/files/read?path={encoded}"),
+                    None,
+                    None,
+                ),
+            )
+            .await?;
+            check(
+                &mut failures,
+                &format!("file_denied_path_{index}"),
+                denied.status == Some(403),
+                denied.detail(),
+            );
+        }
+    } else if timeout_checks {
         for scenario in ["stall", "stall-stream"] {
             let reply = rpc(
                 &dc,

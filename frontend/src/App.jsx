@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { OllamaRemoteClient, safeRandomUUID } from './webrtcClient.js';
 import { readNdjson } from './ndjson.js';
 import { readSse } from './sse.js';
+import FileBrowser from './FileBrowser.jsx';
 import './style.css';
 
 const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
@@ -63,6 +64,8 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState('chat');
+  const [fileDirty, setFileDirty] = useState(false);
   const clientRef = useRef(null);
   const closingRef = useRef(Promise.resolve());
   const connectionActionRef = useRef(0);
@@ -75,6 +78,7 @@ export default function App() {
   const connected = state === 'connected';
 
   const doConnect = async (activeConfig) => {
+    if (fileDirty && !window.confirm('重新连接会清除未保存的文件修改，是否继续？')) return;
     setError('');
     const c = activeConfig || config;
     apiModeRef.current = c.apiMode;
@@ -199,6 +203,7 @@ export default function App() {
   };
 
   const handleDisconnect = () => {
+    if (fileDirty && !window.confirm('断开连接会清除未保存的文件修改，是否继续？')) return;
     ++connectionActionRef.current;
     ++modelLoadRef.current;
     abortRef.current?.abort();
@@ -272,7 +277,7 @@ export default function App() {
   return (
     <main className="app">
       <header className="app-header">
-        <div><span className="eyebrow">YOUR MODEL, AT HOME</span><h1>远程 Ollama</h1><p>在浏览器里，与家里的模型对话。</p></div>
+        <div><span className="eyebrow">YOUR MODEL, AT HOME</span><h1>远程 Ollama</h1><p>与家里的模型对话，浏览本地 Markdown 文件。</p></div>
         <div className="header-actions">
           <a href="/setup" target="_blank" rel="noreferrer" className="setup-link" title="查看配置与接入指南">⚙️ 配置与接入</a>
           <div className={'connection-badge ' + (connected ? 'online' : '')} role="status"><span />{stateLabels[state]}{connected && route ? ' · ' + route : ''}</div>
@@ -306,7 +311,13 @@ export default function App() {
           {state !== 'disconnected' && <button className="secondary" onClick={handleDisconnect}>断开</button>}
         </div>
       </details>
-      <section className="chat" aria-label="聊天">
+      <nav className="view-tabs" aria-label="功能切换">
+        <button className={view === 'chat' ? '' : 'secondary'} aria-pressed={view === 'chat'} onClick={() => setView('chat')}>聊天</button>
+        <button className={view === 'files' ? '' : 'secondary'} aria-pressed={view === 'files'} onClick={() => setView('files')}>文件</button>
+      </nav>
+      {view === 'files' && error && <div className="error" role="alert">{error}</div>}
+      <div hidden={view !== 'files'}><FileBrowser client={clientRef.current} connected={connected} onDirtyChange={setFileDirty} /></div>
+      <section className="chat" aria-label="聊天" hidden={view !== 'chat'}>
         <div className="chat-toolbar">
           <div className="chat-toolbar-left">
             <label htmlFor="model-select">模型</label>

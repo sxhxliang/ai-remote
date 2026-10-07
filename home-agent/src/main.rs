@@ -1,4 +1,5 @@
 mod config;
+mod files;
 mod rpc;
 
 use anyhow::{anyhow, Result};
