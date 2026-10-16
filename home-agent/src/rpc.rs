@@ -21,6 +21,9 @@ struct Request {
     id: String,
     method: String,
     path: String,
+    /// Named upstream (e.g. "minimax"). Absent means the default Ollama/OpenAI routing.
+    #[serde(default)]
+    target: Option<String>,
     #[serde(default)]
     headers: HashMap<String, String>,
     body: Option<String>,
@@ -213,7 +216,10 @@ impl Rpc {
     }
 
     fn submit(self: &Arc<Self>, request: Request) {
-        if let Err(error) = self.config.request_url(&request.method, &request.path) {
+        if let Err(error) =
+            self.config
+                .request_url(request.target.as_deref(), &request.method, &request.path)
+        {
             self.fail(&request.id, 403, &error.to_string());
             return;
         }
@@ -292,7 +298,9 @@ impl Rpc {
     }
 
     async fn forward(&self, request: &Request, active: &Active) -> Result<()> {
-        let url = self.config.request_url(&request.method, &request.path)?;
+        let url =
+            self.config
+                .request_url(request.target.as_deref(), &request.method, &request.path)?;
         let mut builder = self
             .config
             .http
@@ -305,10 +313,11 @@ impl Rpc {
                 builder = builder.header(name, value);
             }
         }
-        if request.path.starts_with("/v1/") {
-            if let Some(key) = &self.config.openai_api_key {
-                builder = builder.bearer_auth(key);
-            }
+        if let Some(key) = self
+            .config
+            .bearer_key(request.target.as_deref(), &request.path)
+        {
+            builder = builder.bearer_auth(key);
         }
         if let Some(body) = &request.body {
             builder = builder.body(body.clone());

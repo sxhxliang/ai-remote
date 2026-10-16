@@ -62,6 +62,18 @@ export function createMockOllamaServer() {
       json(response, 200, { mock: true, deleted: false });
       return;
     }
+    if (path === '/v1/image_generation' && request.method === 'POST') {
+      // Mock MiniMax image-01 for local ImageGen UI testing
+      // (point the agent's MINIMAX_BASE at this mock server).
+      const placeholder = 'data:image/svg+xml,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"><rect width="1024" height="1024" fill="#deeee3"/><text x="512" y="512" font-size="48" text-anchor="middle" fill="#21614d">Mock image-01</text></svg>'
+      );
+      json(response, 200, {
+        data: { image_urls: [placeholder] },
+        base_resp: { status_code: 0, status_msg: 'success' },
+      });
+      return;
+    }
     if (!['/api/chat', '/api/generate', '/v1/chat/completions'].includes(path) || request.method !== 'POST') {
       json(response, 404, { error: 'Mock Ollama: endpoint not found' });
       return;

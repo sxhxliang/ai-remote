@@ -16,6 +16,7 @@ import {
   saveChatHistory,
   getDefaultSignalingUrl,
 } from './storage.js';
+import ImageGen from './ImageGen.jsx';
 import './style.css';
 
 const stateLabels = {
@@ -100,6 +101,7 @@ export default function App() {
   const [showTokensModal, setShowTokensModal] = useState(false);
   const [copiedKey, setCopiedKey] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [view, setView] = useState('chat');
 
   // References
   const clientRef = useRef(null);
@@ -672,6 +674,22 @@ export default function App() {
             )}
           </div>
         </header>
+        <div className="tabs">
+          <button className={view === 'chat' ? 'active' : ''} onClick={() => setView('chat')}>
+            💬 聊天
+          </button>
+          <button className={view === 'image' ? 'active' : ''} onClick={() => setView('image')}>
+            🎨 生图
+          </button>
+        </div>
+
+        {view === 'image' ? (
+          <ImageGen
+            getClient={() => clientRef.current}
+            connected={activeState === 'connected'}
+          />
+        ) : (
+          <>
 
         {/* Chat Toolbar */}
         <div className="chat-toolbar">
@@ -838,6 +856,8 @@ export default function App() {
             )}
           </div>
         </div>
+                </>
+        )}
       </main>
 
       {/* Edit Agent Modal */}

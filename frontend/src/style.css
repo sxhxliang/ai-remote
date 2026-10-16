@@ -843,3 +843,25 @@ body, html {
   font-family: monospace;
   color: var(--text-muted);
 }
+
+/* MiniMax image generation view */
+.tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+.tabs button { padding: 9px 20px; border-radius: 20px; border: 1px solid #dbe3dd; background: #fbfcfa; color: #5c6f63; font-size: 14px; font-weight: 500; }
+.tabs button.active { background: #21614d; border-color: #21614d; color: #fff; }
+.imagegen { border: 1px solid #dbe3dd; border-radius: 14px; background: #fff; overflow: hidden; }
+.imagegen-form { padding: 22px; border-bottom: 1px solid #edf0eb; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.imagegen-form .wide { grid-column: 1 / -1; }
+.imagegen-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; }
+.imagegen-actions .hint { font-size: 12px; color: #96a298; }
+.imagegen .error { margin: 16px 22px 0; }
+.imagegen-results { padding: 22px; display: grid; gap: 20px; }
+.imagegen-item { border: 1px solid #edf0eb; border-radius: 10px; padding: 16px 18px; background: #fcfdfa; }
+.imagegen-meta { display: flex; justify-content: space-between; font-size: 11px; color: #96a298; margin-bottom: 8px; }
+.imagegen-prompt { font-size: 14px; margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.imagegen-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.imagegen-grid img { width: 100%; border-radius: 8px; display: block; background: #eef2ee; }
+
+.imagegen .empty-state { padding: 34px 22px; text-align: center; color: #96a298; font-size: 14px; }
+.imagegen .check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #40514a; }
+.imagegen .check input { width: auto; }
+

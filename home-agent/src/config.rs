@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashSet, env, time::Duration};
@@ -53,6 +53,8 @@ pub struct Config {
     pub base: Url,
     pub openai_base: Url,
     pub openai_api_key: Option<String>,
+    pub minimax_base: Url,
+    pub minimax_api_key: Option<String>,
     pub allowed: HashSet<String>,
     pub timeout: Duration,
     pub http: reqwest::Client,
@@ -166,6 +168,24 @@ impl Config {
         let openai_api_key = env::var("OPENAI_API_KEY")
             .ok()
             .filter(|key| !key.is_empty());
+        // MiniMax image generation (image-01). The key is injected server-side
+        // and never leaves the home agent; the browser only names the target.
+        let minimax_base = Url::parse(
+            &env::var("MINIMAX_BASE").unwrap_or_else(|_| "https://api.minimaxi.com".into()),
+        )?;
+        ensure!(
+            matches!(minimax_base.scheme(), "http" | "https")
+                && minimax_base.host_str().is_some()
+                && minimax_base.path() == "/"
+                && minimax_base.query().is_none()
+                && minimax_base.fragment().is_none()
+                && minimax_base.username().is_empty()
+                && minimax_base.password().is_none(),
+            "MINIMAX_BASE must be an origin without path or credentials"
+        );
+        let minimax_api_key = env::var("MINIMAX_API_KEY")
+            .ok()
+            .filter(|key| !key.is_empty());
         let allowed: HashSet<String> = env::var("ALLOWED_PATHS")
             .unwrap_or_else(|_| {
                 "/api/generate,/api/chat,/api/tags,/v1/models,/v1/chat/completions".into()
@@ -249,19 +269,54 @@ impl Config {
             base,
             openai_base,
             openai_api_key,
+            minimax_base,
+            minimax_api_key,
             allowed,
             timeout: Duration::from_secs(timeout_secs),
             http,
         })
     }
 
-    pub fn request_url(&self, method: &str, path: &str) -> Result<Url> {
-        let base = if path.starts_with("/v1/") {
-            &self.openai_base
-        } else {
-            &self.base
-        };
-        validate_path(base, &self.allowed, method, path)
+    pub fn request_url(&self, target: Option<&str>, method: &str, path: &str) -> Result<Url> {
+        match target {
+            // Named upstream for MiniMax image generation. The path allowlist is
+            // separate from ALLOWED_PATHS so /v1/image_generation is unreachable
+            // without naming this target, and the target is dead without a key.
+            Some("minimax") => {
+                ensure!(
+                    self.minimax_api_key.is_some(),
+                    "MiniMax is not configured: set MINIMAX_API_KEY on the home agent"
+                );
+                let allowed: HashSet<String> =
+                    MINIMAX_PATHS.iter().map(|s| s.to_string()).collect();
+                validate_path(&self.minimax_base, &allowed, method, path)
+            }
+            Some(other) => bail!("unknown target {other:?}"),
+            None => {
+                let base = if path.starts_with("/v1/") {
+                    &self.openai_base
+                } else {
+                    &self.base
+                };
+                validate_path(base, &self.allowed, method, path)
+            }
+        }
+    }
+
+    /// Bearer key injected server-side for the chosen upstream; never sent to
+    /// the browser or the signaling server.
+    pub fn bearer_key(&self, target: Option<&str>, path: &str) -> Option<&str> {
+        match target {
+            Some("minimax") => self.minimax_api_key.as_deref(),
+            Some(_) => None,
+            None => {
+                if path.starts_with("/v1/") {
+                    self.openai_api_key.as_deref()
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     pub fn rtc_configuration(&self, signaled: &[RTCIceServer]) -> RTCConfiguration {
@@ -270,6 +325,8 @@ impl Config {
 }
 
 const DEFAULT_STUN_URLS: [&str; 2] = ["stun:stun.cloudflare.com:3478", "stun:stun.miwifi.com:3478"];
+/// Exact paths the "minimax" target may call. Kept separate from ALLOWED_PATHS.
+const MINIMAX_PATHS: [&str; 1] = ["/v1/image_generation"];
 const MAX_SIGNALED_ICE_ENTRIES: usize = 8;
 
 /// webrtc-rs only speaks STUN and TURN over UDP; TCP/TLS TURN stays browser-only.
@@ -481,5 +538,89 @@ mod tests {
                 "{method} {path}"
             );
         }
+    }
+
+    fn minimax_config(key: Option<&str>) -> Config {
+        Config {
+            signaling: Url::parse("ws://127.0.0.1:8080/ws").unwrap(),
+            rtc: RTCConfiguration::default(),
+            base: Url::parse("http://127.0.0.1:11434").unwrap(),
+            openai_base: Url::parse("http://127.0.0.1:11434").unwrap(),
+            openai_api_key: None,
+            minimax_base: Url::parse("https://api.minimaxi.com").unwrap(),
+            minimax_api_key: key.map(str::to_owned),
+            allowed: HashSet::from([
+                "/api/generate".into(),
+                "/api/chat".into(),
+                "/api/tags".into(),
+                "/v1/models".into(),
+                "/v1/chat/completions".into(),
+            ]),
+            timeout: Duration::from_secs(600),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    #[test]
+    fn minimax_target_allows_only_image_generation_with_key() {
+        let config = minimax_config(Some("test-key"));
+        let url = config
+            .request_url(Some("minimax"), "POST", "/v1/image_generation")
+            .unwrap();
+        assert_eq!(url.as_str(), "https://api.minimaxi.com/v1/image_generation");
+        assert_eq!(
+            config.bearer_key(Some("minimax"), "/v1/image_generation"),
+            Some("test-key")
+        );
+        // Other MiniMax-ish paths stay closed even with the target named.
+        for path in [
+            "/v1/chat/completions",
+            "/v1/models",
+            "/v1/image_generation/extra",
+        ] {
+            assert!(
+                config.request_url(Some("minimax"), "POST", path).is_err(),
+                "{path}"
+            );
+        }
+        // /v1/image_generation is not reachable without naming the target.
+        assert!(config
+            .request_url(None, "POST", "/v1/image_generation")
+            .is_err());
+        // Unknown targets are rejected outright.
+        assert!(config
+            .request_url(Some("evil"), "POST", "/v1/image_generation")
+            .is_err());
+        assert_eq!(
+            config.bearer_key(Some("evil"), "/v1/image_generation"),
+            None
+        );
+    }
+
+    #[test]
+    fn minimax_target_is_dead_without_api_key() {
+        let config = minimax_config(None);
+        assert!(config
+            .request_url(Some("minimax"), "POST", "/v1/image_generation")
+            .is_err());
+        assert_eq!(
+            config.bearer_key(Some("minimax"), "/v1/image_generation"),
+            None
+        );
+    }
+
+    #[test]
+    fn default_routing_and_bearer_behavior_unchanged() {
+        let mut config = minimax_config(Some("test-key"));
+        config.openai_api_key = Some("openai-key".into());
+        assert!(config.request_url(None, "POST", "/api/chat").is_ok());
+        assert!(config
+            .request_url(None, "POST", "/v1/chat/completions")
+            .is_ok());
+        assert_eq!(config.bearer_key(None, "/api/chat"), None);
+        assert_eq!(
+            config.bearer_key(None, "/v1/chat/completions"),
+            Some("openai-key")
+        );
     }
 }

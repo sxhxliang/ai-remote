@@ -278,6 +278,17 @@ Agent 的 `ALLOWED_PATHS` 默认精确允许 `GET /api/tags`、`POST /api/chat`�
 
 其他 OpenAI 兼容服务可在家庭 Agent 环境文件中设置 `OPENAI_BASE=https://example.com`（只填写源站，不附加 `/v1`）；如需鉴权，再设置 `OPENAI_API_KEY`。密钥仅由家庭 Agent 添加到上游请求，不会发送到浏览器或信令服务。服务需要支持模型列表和流式 Chat Completions 端点；如果不提供模型列表，页面仍可手动输入模型 ID。
 
+### MiniMax 生图（image-01）
+
+页面新增「🎨 生图」页签，通过家里 Agent 中转调用 MiniMax `image-01` 文生图接口。在家庭 Agent 环境文件中设置：
+
+- `MINIMAX_API_KEY=<你的 key>`（必填；不设置则生图接口不可用）
+- `MINIMAX_BASE=https://api.minimaxi.com`（可选，默认值；国际 key 改为 `https://api.minimax.io`——key 与端点必须配套，混用会报 Invalid API key）
+
+密钥只保存在家里 Agent，Agent 以 `Authorization: Bearer` 方式注入上游请求，浏览器永远接触不到 key。Agent 侧对 MiniMax 只放行 `POST /v1/image_generation` 一个精确路径（独立于 `ALLOWED_PATHS` 的白名单），且该路径不带 `target: "minimax"` 标记时无法访问。图片以 `response_format: 'url'` 返回，浏览器直接从 MiniMax CDN 加载（链接 24 小时有效），不经过数据通道传输大图。
+
+生图页支持提示词、画面比例（1:1、16:9、9:16 等）、生成张数（1–4）和提示词优化开关，生成历史保留在当前页面。本地 Mock 联调时，`scripts/local-stack.mjs` 已把 `MINIMAX_BASE` 指向 Mock 服务并预置了测试 key，mock 会返回占位图。
+
 信令服务的 `STUN_URL`、`TURN_URL`（可用逗号分隔多个地址）、`TURN_USER` 和 `TURN_PASS` 会随鉴权后的 `ready` 消息下发给浏览器和 Agent，并与两端的本地设置合并去重；两端都没有任何配置时才使用公共 STUN。`/api/setup` 只有携带 `Authorization: Bearer <Token>` 时才返回 Token 和接入指令，且从不返回 TURN 密码。
 
 Agent 的 `ICE_SERVERS_JSON` 接受浏览器形式的 ICE 配置，`urls` 可为字符串或数组。Agent 也支持 `STUN_URL`、`TURN_URL`、`TURN_USER`、`TURN_PASS` 和 `FORCE_RELAY`。`REQUEST_TIMEOUT_SECS` 默认 600 秒。

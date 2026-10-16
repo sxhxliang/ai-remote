@@ -439,6 +439,16 @@ export class OllamaRemoteClient {
   }
 
   async ollamaFetch(input, init = {}) {
+    return this._remoteFetch(null, input, init);
+  }
+
+  // MiniMax image generation goes through the named "minimax" upstream; the
+  // API key is injected by the home agent and never reaches the browser.
+  async minimaxFetch(input, init = {}) {
+    return this._remoteFetch('minimax', input, init);
+  }
+
+  async _remoteFetch(target, input, init = {}) {
     if (this.dc?.readyState !== 'open') throw new Error('尚未连接到家里的 Agent');
     const resource = typeof input === 'string' && input.startsWith('/') ? 'http://ollama.local' + input : input;
     const request = new Request(resource, init);
@@ -479,6 +489,7 @@ export class OllamaRemoteClient {
       if (!this.pending.has(id)) return;
       if (channel !== this.dc) throw new Error('连接已更换，请重新发送请求');
       const packet = { id, method: request.method, path: url.pathname + url.search, headers: Object.fromEntries(request.headers), body };
+      if (target) packet.target = target;
       const bytes = encoder.encode(JSON.stringify(packet));
       if (bytes.length > MAX_REQUEST) throw new Error('请求超过 8 MiB，请缩短对话或减小附件');
       if (bytes.length <= MAX_FRAME) await this._sendFrame(packet, entry.upload.signal);

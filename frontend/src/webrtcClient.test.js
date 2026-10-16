@@ -350,3 +350,31 @@ test('forced relay without any TURN server fails with an actionable message', as
     await assert.rejects(client.connect(), /仅使用中继需要 TURN/);
   } finally { await client.disconnect(); [globalThis.WebSocket, globalThis.RTCPeerConnection] = originals; }
 });
+
+test('minimaxFetch tags the packet with target minimax', async () => {
+  const { client, channel, respond } = transport();
+  channel.onSend = (packet) => {
+    if (packet.method) {
+      assert.equal(packet.target, 'minimax');
+      assert.equal(packet.path, '/v1/image_generation');
+      assert.equal(JSON.parse(packet.body).model, 'image-01');
+      respond(packet.id, JSON.stringify({ data: { image_urls: ['https://example.com/1.png'] }, base_resp: { status_code: 0, status_msg: 'success' } }));
+    }
+  };
+  const response = await client.minimaxFetch('/v1/image_generation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'image-01', prompt: 'test' }) });
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.deepEqual(data.data.image_urls, ['https://example.com/1.png']);
+});
+
+test('ollamaFetch packets carry no target field', async () => {
+  const { client, channel, respond } = transport();
+  channel.onSend = (packet) => {
+    if (packet.method) {
+      assert.ok(!('target' in packet));
+      respond(packet.id, '{}');
+    }
+  };
+  const response = await client.fetch('/api/chat', { method: 'POST' });
+  assert.equal(response.status, 200);
+});
