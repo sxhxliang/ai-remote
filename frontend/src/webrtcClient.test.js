@@ -377,4 +377,5 @@ test('ollamaFetch packets carry no target field', async () => {
   };
   const response = await client.fetch('/api/chat', { method: 'POST' });
   assert.equal(response.status, 200);
+  await response.text();
 });
